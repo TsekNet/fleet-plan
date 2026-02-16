@@ -108,15 +108,15 @@ func TestRenderDiffTerminal(t *testing.T) {
 			name:    "deleted with host count and warning",
 			verbose: false,
 			results: []diff.DiffResult{{
-				Team: "Mobile",
+				Team: "Workstations",
 				Policies: diff.ResourceDiff{
 					Deleted: []diff.ResourceChange{{
-						Name: "[macOS] Gatekeeper", HostCount: 42,
+						Name: "[Windows] Legacy AV Check", HostCount: 42,
 						Warning: "will delete policy affecting 42 hosts",
 					}},
 				},
 			}},
-			wantAll: []string{"[macOS] Gatekeeper", "42 hosts", "1 deleted", "will delete policy"},
+			wantAll: []string{"[Windows] Legacy AV Check", "42 hosts", "1 deleted", "will delete policy"},
 		},
 		{
 			name:    "info errors not counted as errors",

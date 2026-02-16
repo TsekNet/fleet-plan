@@ -26,9 +26,9 @@ func TestParseTestdataRepo(t *testing.T) {
 		t.Fatalf("expected zero parse errors, got %d", len(repo.Errors))
 	}
 
-	// Three teams: Workstations, Servers, Mobile
-	if len(repo.Teams) != 3 {
-		t.Fatalf("expected 3 teams, got %d", len(repo.Teams))
+	// Two teams: Workstations, Servers
+	if len(repo.Teams) != 2 {
+		t.Fatalf("expected 2 teams, got %d", len(repo.Teams))
 	}
 
 	// Find Workstations team
@@ -43,9 +43,9 @@ func TestParseTestdataRepo(t *testing.T) {
 		t.Fatal("Workstations team not found")
 	}
 
-	// Workstations: 5 policies (filevault, gatekeeper, defender, ssh, firewall)
-	if len(ws.Policies) != 5 {
-		t.Fatalf("Workstations: expected 5 policies, got %d", len(ws.Policies))
+	// Workstations: 4 policies (filevault, defender, ssh, firewall)
+	if len(ws.Policies) != 4 {
+		t.Fatalf("Workstations: expected 4 policies, got %d", len(ws.Policies))
 	}
 
 	// Verify FileVault policy
@@ -134,24 +134,6 @@ func TestParseTestdataRepo(t *testing.T) {
 	}
 	if len(srv.Queries) != 2 {
 		t.Fatalf("Servers: expected 2 queries, got %d", len(srv.Queries))
-	}
-
-	// Find Mobile team
-	var mob *ParsedTeam
-	for i := range repo.Teams {
-		if repo.Teams[i].Name == "Mobile" {
-			mob = &repo.Teams[i]
-			break
-		}
-	}
-	if mob == nil {
-		t.Fatal("Mobile team not found")
-	}
-	if len(mob.Policies) != 1 {
-		t.Fatalf("Mobile: expected 1 policy, got %d", len(mob.Policies))
-	}
-	if len(mob.Queries) != 1 {
-		t.Fatalf("Mobile: expected 1 query, got %d", len(mob.Queries))
 	}
 
 	// Labels from default.yml

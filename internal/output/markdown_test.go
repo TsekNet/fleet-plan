@@ -65,7 +65,7 @@ func TestRenderDiffMarkdown(t *testing.T) {
 		{
 			name: "deleted with warning",
 			results: []diff.DiffResult{{
-				Team: "Mobile",
+				Team: "Workstations",
 				Software: diff.ResourceDiff{
 					Deleted: []diff.ResourceChange{{Name: "OldApp", Warning: "in use by 10 hosts"}},
 				},

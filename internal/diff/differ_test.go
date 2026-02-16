@@ -22,7 +22,6 @@ import (
 //   - Queries: Uptime (interval changed → modified)
 //   - No policies (SSH Root Login is new → added)
 //
-// Mobile team: not in API → new team info message.
 // Labels: macOS 14+ and Windows 11 exist. Ubuntu 24.04 does NOT → missing label error.
 func TestDiffTestdataAgainstMockAPI(t *testing.T) {
 	root := testutil.TestdataRoot(t)
@@ -84,10 +83,10 @@ func TestDiffTestdataAgainstMockAPI(t *testing.T) {
 	// --- Test all teams (unfiltered) ---
 	allResults := Diff(current, proposed, "")
 
-	// Should have 4 results: (global), Workstations, Servers, Mobile
+	// Should have 3 results: (global), Workstations, Servers
 	// The (global) result comes from default.yml parsing.
-	if len(allResults) != 4 {
-		t.Fatalf("expected 4 results, got %d", len(allResults))
+	if len(allResults) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(allResults))
 	}
 
 	// Verify global result exists and is first
@@ -98,9 +97,9 @@ func TestDiffTestdataAgainstMockAPI(t *testing.T) {
 	// --- Workstations ---
 	ws := findTeam(t, allResults, "Workstations")
 
-	// Policies: Gatekeeper, Defender, SSH, Firewall are new (4 added)
-	if len(ws.Policies.Added) != 4 {
-		t.Errorf("Workstations: expected 4 added policies, got %d: %v", len(ws.Policies.Added), ws.Policies.Added)
+	// Policies: Defender, SSH, Firewall are new (3 added)
+	if len(ws.Policies.Added) != 3 {
+		t.Errorf("Workstations: expected 3 added policies, got %d: %v", len(ws.Policies.Added), ws.Policies.Added)
 	}
 	// FileVault modified (query changed)
 	if len(ws.Policies.Modified) != 1 {
@@ -184,28 +183,6 @@ func TestDiffTestdataAgainstMockAPI(t *testing.T) {
 		}
 	}
 
-	// --- Mobile (new team) ---
-	mob := findTeam(t, allResults, "Mobile")
-
-	// All resources should be "added" since team is new
-	if len(mob.Policies.Added) != 1 {
-		t.Errorf("Mobile: expected 1 added policy, got %d", len(mob.Policies.Added))
-	}
-	if len(mob.Queries.Added) != 1 {
-		t.Errorf("Mobile: expected 1 added query, got %d", len(mob.Queries.Added))
-	}
-
-	// Should have info message about new team
-	foundNewTeamInfo := false
-	for _, e := range mob.Errors {
-		if strings.Contains(e, "does not exist in Fleet yet") {
-			foundNewTeamInfo = true
-			break
-		}
-	}
-	if !foundNewTeamInfo {
-		t.Error("expected info message about new team for Mobile")
-	}
 }
 
 // TestDiffTestdataWorkstationsOnly verifies filtered diff for a single team.

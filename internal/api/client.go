@@ -263,40 +263,86 @@ func (c *Client) GetConfig(ctx context.Context) (map[string]any, error) {
 	return result, nil
 }
 
-// GetTeams fetches all teams.
+// GetTeams fetches all teams with pagination.
 func (c *Client) GetTeams(ctx context.Context) ([]Team, error) {
-	var resp teamsResponse
-	q := url.Values{"per_page": {"250"}}
-	if err := c.get(ctx, "/api/v1/fleet/teams", q, &resp); err != nil {
-		return nil, fmt.Errorf("fetching teams: %w", err)
+	var all []Team
+	page := 0
+	for {
+		q := url.Values{
+			"per_page": {"250"},
+			"page":     {strconv.Itoa(page)},
+		}
+		var resp teamsResponse
+		if err := c.get(ctx, "/api/v1/fleet/teams", q, &resp); err != nil {
+			return nil, fmt.Errorf("fetching teams: %w", err)
+		}
+		all = append(all, resp.Teams...)
+		if len(resp.Teams) < 250 {
+			break
+		}
+		page++
+		if page > 100 { // safety: max 25k teams
+			break
+		}
 	}
-	return resp.Teams, nil
+	return all, nil
 }
 
-// GetPolicies fetches policies for a team (0 = global).
+// GetPolicies fetches policies for a team (0 = global) with pagination.
 func (c *Client) GetPolicies(ctx context.Context, teamID uint) ([]Policy, error) {
-	path := "/api/v1/fleet/policies"
+	apiPath := "/api/v1/fleet/policies"
 	if teamID > 0 {
-		path = fmt.Sprintf("/api/v1/fleet/teams/%d/policies", teamID)
+		apiPath = fmt.Sprintf("/api/v1/fleet/teams/%d/policies", teamID)
 	}
-	var resp policiesResponse
-	if err := c.get(ctx, path, nil, &resp); err != nil {
-		return nil, fmt.Errorf("fetching policies (team %d): %w", teamID, err)
+	var all []Policy
+	page := 0
+	for {
+		q := url.Values{
+			"per_page": {"250"},
+			"page":     {strconv.Itoa(page)},
+		}
+		var resp policiesResponse
+		if err := c.get(ctx, apiPath, q, &resp); err != nil {
+			return nil, fmt.Errorf("fetching policies (team %d): %w", teamID, err)
+		}
+		all = append(all, resp.Policies...)
+		if len(resp.Policies) < 250 {
+			break
+		}
+		page++
+		if page > 100 { // safety: max 25k policies
+			break
+		}
 	}
-	return resp.Policies, nil
+	return all, nil
 }
 
-// GetQueries fetches queries, optionally filtered by team.
+// GetQueries fetches queries, optionally filtered by team, with pagination.
 func (c *Client) GetQueries(ctx context.Context, teamID uint) ([]Query, error) {
-	q := url.Values{"per_page": {"250"}}
-	if teamID > 0 {
-		q.Set("team_id", strconv.FormatUint(uint64(teamID), 10))
+	var all []Query
+	page := 0
+	for {
+		q := url.Values{
+			"per_page": {"250"},
+			"page":     {strconv.Itoa(page)},
+		}
+		if teamID > 0 {
+			q.Set("team_id", strconv.FormatUint(uint64(teamID), 10))
+		}
+		var resp queriesResponse
+		if err := c.get(ctx, "/api/v1/fleet/queries", q, &resp); err != nil {
+			return nil, fmt.Errorf("fetching queries (team %d): %w", teamID, err)
+		}
+		all = append(all, resp.Queries...)
+		if len(resp.Queries) < 250 {
+			break
+		}
+		page++
+		if page > 100 { // safety: max 25k queries
+			break
+		}
 	}
-	var resp queriesResponse
-	if err := c.get(ctx, "/api/v1/fleet/queries", q, &resp); err != nil {
-		return nil, fmt.Errorf("fetching queries (team %d): %w", teamID, err)
-	}
-	return resp.Queries, nil
+	return all, nil
 }
 
 // GetSoftware fetches managed (available_for_install) software titles for a team.
@@ -356,14 +402,29 @@ func (c *Client) GetFleetMaintainedApps(ctx context.Context) ([]FleetMaintainedA
 	return all, nil
 }
 
-// GetLabels fetches all labels.
+// GetLabels fetches all labels with pagination.
 func (c *Client) GetLabels(ctx context.Context) ([]Label, error) {
-	var resp labelsResponse
-	q := url.Values{"per_page": {"250"}}
-	if err := c.get(ctx, "/api/v1/fleet/labels", q, &resp); err != nil {
-		return nil, fmt.Errorf("fetching labels: %w", err)
+	var all []Label
+	page := 0
+	for {
+		q := url.Values{
+			"per_page": {"250"},
+			"page":     {strconv.Itoa(page)},
+		}
+		var resp labelsResponse
+		if err := c.get(ctx, "/api/v1/fleet/labels", q, &resp); err != nil {
+			return nil, fmt.Errorf("fetching labels: %w", err)
+		}
+		all = append(all, resp.Labels...)
+		if len(resp.Labels) < 250 {
+			break
+		}
+		page++
+		if page > 100 { // safety: max 25k labels
+			break
+		}
 	}
-	return resp.Labels, nil
+	return all, nil
 }
 
 // GetProfiles fetches MDM profiles for a team.

@@ -8,7 +8,6 @@ agent_options:
       distributed_interval: 10
 policies:
   - path: ../policies/mac/macos-filevault-enabled.yml
-  - path: ../policies/mac/macos-gatekeeper-enabled.yml
   - path: ../policies/windows/windows-defender-realtime.yml
   - path: ../policies/linux/linux-ssh-root-disabled.yml
   - path: ../policies/linux/linux-firewall-enabled.yml

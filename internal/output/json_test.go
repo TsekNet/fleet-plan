@@ -75,7 +75,7 @@ func TestRenderDiffJSON(t *testing.T) {
 		{
 			name: "deleted with warning and host count",
 			results: []diff.DiffResult{{
-				Team: "Mobile",
+				Team: "Workstations",
 				Policies: diff.ResourceDiff{
 					Deleted: []diff.ResourceChange{{
 						Name:      "Old Policy",

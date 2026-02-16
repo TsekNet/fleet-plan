@@ -4,6 +4,7 @@
 package diff
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
@@ -479,7 +480,7 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) Reso
 }
 
 func normalizeSoftwarePath(s string) string {
-	s = strings.TrimSpace(strings.ToLower(s))
+	s = strings.TrimSpace(s)
 	if s == "" {
 		return ""
 	}
@@ -695,17 +696,6 @@ func validateLabels(team parser.ParsedTeam, labelMap map[string]api.Label, chang
 
 // ---------- Global config diffing ----------
 
-// serverOnlyKeys are keys returned by the Fleet API that don't exist in YAML.
-// Skip these during comparison to avoid false positives.
-var serverOnlyKeys = map[string]bool{
-	"license":          true,
-	"logging":          true,
-	"update_interval":  true,
-	"vulnerabilities":  true,
-	"sandbox_enabled":  true,
-	"server_settings":  true, // server_url is set by Fleet, not YAML
-}
-
 // diffConfig compares the current Fleet config (from API) against proposed
 // global config sections from default.yml. Returns a list of config changes.
 // Skips values containing "$" (env var placeholders that Fleet substitutes).
@@ -739,8 +729,12 @@ func diffConfig(apiConfig map[string]any, proposed *parser.ParsedGlobal) []Confi
 				}
 			}
 		case "controls":
-			// controls fields are spread across the top level (mdm, etc.)
-			apiSection = apiConfig
+			// controls fields map to the "mdm" section in the API response
+			if v, ok := apiConfig["mdm"]; ok {
+				if m, ok := v.(map[string]any); ok {
+					apiSection = m
+				}
+			}
 		}
 
 		if apiSection == nil {
@@ -783,16 +777,25 @@ func containsEnvVar(s string) bool {
 }
 
 // flattenMap recursively flattens a nested map into dot-separated key paths.
-// Calls fn(key, value) for each leaf value.
+// Calls fn(key, value) for each leaf value. Slices are serialized to JSON
+// for stable, order-independent comparison.
 func flattenMap(m map[string]any, prefix string, fn func(key, val string)) {
 	for k, v := range m {
 		fullKey := k
 		if prefix != "" {
 			fullKey = prefix + "." + k
 		}
-		if nested, ok := v.(map[string]any); ok {
-			flattenMap(nested, fullKey, fn)
-		} else {
+		switch val := v.(type) {
+		case map[string]any:
+			flattenMap(val, fullKey, fn)
+		case []any:
+			b, err := json.Marshal(val)
+			if err != nil {
+				fn(fullKey, fmt.Sprint(val))
+			} else {
+				fn(fullKey, string(b))
+			}
+		default:
 			fn(fullKey, fmt.Sprint(v))
 		}
 	}
