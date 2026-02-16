@@ -1,0 +1,9 @@
+- name: "[macOS] FileVault Enabled"
+  description: Checks that FileVault disk encryption is enabled on macOS devices.
+  resolution: |
+    Open System Settings > Privacy & Security > FileVault and click "Turn On FileVault".
+  query: "SELECT 1 FROM disk_encryption WHERE user_uuid IS NOT '' AND filevault_status = 'on' LIMIT 1;"
+  platform: darwin
+  critical: true
+  labels_include_any:
+    - macOS 14+

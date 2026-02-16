@@ -1,0 +1,6 @@
+- name: "[Linux] Firewall Enabled"
+  description: Checks that the host firewall (ufw or firewalld) is active.
+  resolution: ""
+  query: "SELECT 1 FROM iptables WHERE chain = 'INPUT' AND policy = 'DROP' LIMIT 1;"
+  platform: linux
+  critical: false

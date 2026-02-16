@@ -1,0 +1,6 @@
+- name: "[Global] Osquery Health Check"
+  description: Verify osquery is reporting correctly
+  resolution: Restart the osquery service
+  query: "SELECT 1 FROM osquery_info WHERE version IS NOT NULL;"
+  platform: darwin,windows,linux
+  critical: false

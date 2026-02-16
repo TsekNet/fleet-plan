@@ -1,0 +1,9 @@
+name: Mobile
+team_settings: {}
+agent_options: {}
+policies:
+  - path: ../policies/mac/macos-gatekeeper-enabled.yml
+queries:
+  - path: ../queries/shared/uptime.yml
+controls: {}
+software: {}

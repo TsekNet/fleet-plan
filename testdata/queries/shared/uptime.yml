@@ -1,0 +1,6 @@
+- name: System Uptime
+  description: Reports system uptime in seconds.
+  query: "SELECT total_seconds, days, hours FROM uptime;"
+  interval: 86400
+  platform: darwin,windows,linux
+  logging: snapshot

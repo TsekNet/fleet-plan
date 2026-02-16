@@ -1,0 +1,595 @@
+package parser
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/TsekNet/fleet-plan/internal/testutil"
+)
+
+// TestParseTestdataRepo is the primary integration test: parse the shared
+// testdata/ fixture and verify the full structure.
+func TestParseTestdataRepo(t *testing.T) {
+	root := testutil.TestdataRoot(t)
+
+	repo, err := ParseRepo(root, "", "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+
+	if len(repo.Errors) > 0 {
+		for _, e := range repo.Errors {
+			t.Logf("parse error: %s", e)
+		}
+		t.Fatalf("expected zero parse errors, got %d", len(repo.Errors))
+	}
+
+	// Three teams: Workstations, Servers, Mobile
+	if len(repo.Teams) != 3 {
+		t.Fatalf("expected 3 teams, got %d", len(repo.Teams))
+	}
+
+	// Find Workstations team
+	var ws *ParsedTeam
+	for i := range repo.Teams {
+		if repo.Teams[i].Name == "Workstations" {
+			ws = &repo.Teams[i]
+			break
+		}
+	}
+	if ws == nil {
+		t.Fatal("Workstations team not found")
+	}
+
+	// Workstations: 5 policies (filevault, gatekeeper, defender, ssh, firewall)
+	if len(ws.Policies) != 5 {
+		t.Fatalf("Workstations: expected 5 policies, got %d", len(ws.Policies))
+	}
+
+	// Verify FileVault policy
+	var fv *ParsedPolicy
+	for i := range ws.Policies {
+		if strings.Contains(ws.Policies[i].Name, "FileVault") {
+			fv = &ws.Policies[i]
+			break
+		}
+	}
+	if fv == nil {
+		t.Fatal("FileVault policy not found")
+	}
+	if fv.Platform != "darwin" {
+		t.Errorf("FileVault platform: got %q, want darwin", fv.Platform)
+	}
+	if !fv.Critical {
+		t.Error("FileVault should be critical")
+	}
+	if len(fv.LabelsIncludeAny) != 1 || fv.LabelsIncludeAny[0] != "macOS 14+" {
+		t.Errorf("FileVault labels_include_any: got %v", fv.LabelsIncludeAny)
+	}
+
+	// Verify Firewall policy (has empty resolution — intentional for rules testing)
+	var fw *ParsedPolicy
+	for i := range ws.Policies {
+		if strings.Contains(ws.Policies[i].Name, "Firewall") {
+			fw = &ws.Policies[i]
+			break
+		}
+	}
+	if fw == nil {
+		t.Fatal("Firewall policy not found")
+	}
+	if fw.Resolution != "" {
+		t.Errorf("Firewall resolution should be empty, got %q", fw.Resolution)
+	}
+
+	// Workstations: 3 queries (disk-usage, uptime, os-version)
+	if len(ws.Queries) != 3 {
+		t.Fatalf("Workstations: expected 3 queries, got %d", len(ws.Queries))
+	}
+
+	// Workstations: 1 profile (fleet_orbit-allowfulldiskaccess from renamed-fulldisk.mobileconfig)
+	if len(ws.Profiles) != 1 {
+		t.Fatalf("Workstations: expected 1 profile, got %d", len(ws.Profiles))
+	}
+	if ws.Profiles[0].Name != "fleet_orbit-allowfulldiskaccess" {
+		t.Errorf("Workstations profile name: got %q, want fleet_orbit-allowfulldiskaccess", ws.Profiles[0].Name)
+	}
+
+	// Workstations: 2 software packages (slack, example-app)
+	if len(ws.Software.Packages) != 2 {
+		t.Fatalf("Workstations: expected 2 packages, got %d", len(ws.Software.Packages))
+	}
+
+	// Verify self_service override: example-app.yml has self_service: false,
+	// but the team YAML overrides it to true.
+	var exApp *ParsedSoftwarePackage
+	for i := range ws.Software.Packages {
+		if strings.Contains(ws.Software.Packages[i].RefPath, "example-app") {
+			exApp = &ws.Software.Packages[i]
+			break
+		}
+	}
+	if exApp == nil {
+		t.Fatal("example-app package not found")
+	}
+	if !exApp.SelfService {
+		t.Error("example-app should have self_service overridden to true by team YAML")
+	}
+
+	// Find Servers team
+	var srv *ParsedTeam
+	for i := range repo.Teams {
+		if repo.Teams[i].Name == "Servers" {
+			srv = &repo.Teams[i]
+			break
+		}
+	}
+	if srv == nil {
+		t.Fatal("Servers team not found")
+	}
+	if len(srv.Policies) != 1 {
+		t.Fatalf("Servers: expected 1 policy, got %d", len(srv.Policies))
+	}
+	if len(srv.Queries) != 2 {
+		t.Fatalf("Servers: expected 2 queries, got %d", len(srv.Queries))
+	}
+
+	// Find Mobile team
+	var mob *ParsedTeam
+	for i := range repo.Teams {
+		if repo.Teams[i].Name == "Mobile" {
+			mob = &repo.Teams[i]
+			break
+		}
+	}
+	if mob == nil {
+		t.Fatal("Mobile team not found")
+	}
+	if len(mob.Policies) != 1 {
+		t.Fatalf("Mobile: expected 1 policy, got %d", len(mob.Policies))
+	}
+	if len(mob.Queries) != 1 {
+		t.Fatalf("Mobile: expected 1 query, got %d", len(mob.Queries))
+	}
+
+	// Labels from default.yml
+	if len(repo.Labels) != 3 {
+		t.Fatalf("expected 3 labels, got %d", len(repo.Labels))
+	}
+	labelNames := make(map[string]bool)
+	for _, l := range repo.Labels {
+		labelNames[l.Name] = true
+	}
+	if !labelNames["macOS 14+"] || !labelNames["Windows 11"] || !labelNames["Ubuntu 24.04"] {
+		t.Errorf("expected labels 'macOS 14+', 'Windows 11', and 'Ubuntu 24.04', got %v", labelNames)
+	}
+
+	// --- Global config from default.yml ---
+	if repo.Global == nil {
+		t.Fatal("expected Global to be parsed from default.yml")
+	}
+
+	// org_settings
+	if repo.Global.OrgSettings == nil {
+		t.Fatal("expected OrgSettings to be non-nil")
+	}
+	orgInfo, ok := repo.Global.OrgSettings["org_info"].(map[string]any)
+	if !ok {
+		t.Fatal("expected org_info in OrgSettings")
+	}
+	if orgInfo["org_name"] != "Test Corp" {
+		t.Errorf("org_name: got %q, want %q", orgInfo["org_name"], "Test Corp")
+	}
+
+	// agent_options
+	if repo.Global.AgentOptions == nil {
+		t.Fatal("expected AgentOptions to be non-nil")
+	}
+	agentConfig, ok := repo.Global.AgentOptions["config"].(map[string]any)
+	if !ok {
+		t.Fatal("expected config in AgentOptions")
+	}
+	opts, ok := agentConfig["options"].(map[string]any)
+	if !ok {
+		t.Fatal("expected options in agent_options.config")
+	}
+	if opts["distributed_interval"] != 10 {
+		t.Errorf("distributed_interval: got %v, want 10", opts["distributed_interval"])
+	}
+
+	// controls
+	if repo.Global.Controls == nil {
+		t.Fatal("expected Controls to be non-nil")
+	}
+	if repo.Global.Controls["enable_disk_encryption"] != true {
+		t.Errorf("enable_disk_encryption: got %v, want true", repo.Global.Controls["enable_disk_encryption"])
+	}
+
+	// Global policies
+	if len(repo.Global.Policies) != 1 {
+		t.Fatalf("expected 1 global policy, got %d", len(repo.Global.Policies))
+	}
+	if !strings.Contains(repo.Global.Policies[0].Name, "Osquery Health Check") {
+		t.Errorf("global policy name: got %q", repo.Global.Policies[0].Name)
+	}
+
+	// Global queries
+	if len(repo.Global.Queries) != 1 {
+		t.Fatalf("expected 1 global query, got %d", len(repo.Global.Queries))
+	}
+	if repo.Global.Queries[0].Name != "Global System Info" {
+		t.Errorf("global query name: got %q", repo.Global.Queries[0].Name)
+	}
+}
+
+// TestProfileNameExtraction verifies that profile names are extracted from file
+// content (PayloadDisplayName) rather than derived from the filename.
+func TestProfileNameExtraction(t *testing.T) {
+	root := testutil.TestdataRoot(t)
+
+	repo, err := ParseRepo(root, "Workstations", "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+
+	ws := &repo.Teams[0]
+	if len(ws.Profiles) != 1 {
+		t.Fatalf("expected 1 profile, got %d", len(ws.Profiles))
+	}
+
+	p := ws.Profiles[0]
+	// The filename is "renamed-fulldisk.mobileconfig" but the PayloadDisplayName
+	// inside the file is "fleet_orbit-allowfulldiskaccess". The parser should
+	// use the PayloadDisplayName, not the filename.
+	if p.Name != "fleet_orbit-allowfulldiskaccess" {
+		t.Errorf("profile name: got %q, want %q", p.Name, "fleet_orbit-allowfulldiskaccess")
+	}
+	if p.Platform != "darwin" {
+		t.Errorf("profile platform: got %q, want darwin", p.Platform)
+	}
+}
+
+// TestExtractProfileNameFallback verifies that when a file can't be read or
+// doesn't contain a recognizable name, we fall back to the filename.
+func TestExtractProfileNameFallback(t *testing.T) {
+	// Non-existent file should return empty string
+	name := extractProfileName("/nonexistent/file.mobileconfig")
+	if name != "" {
+		t.Errorf("expected empty string for non-existent file, got %q", name)
+	}
+
+	// profileNameFromFilename should strip extensions
+	tests := []struct {
+		input, want string
+	}{
+		{"/path/to/my-profile.mobileconfig", "my-profile"},
+		{"/path/to/declaration.json", "declaration"},
+		{"/path/to/windows-policy.xml", "windows-policy"},
+		{"simple.mobileconfig", "simple"},
+	}
+	for _, tt := range tests {
+		got := profileNameFromFilename(tt.input)
+		if got != tt.want {
+			t.Errorf("profileNameFromFilename(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+// TestExtractMobileconfigName verifies PayloadDisplayName extraction from plist XML.
+// Fleet uses the top-level PayloadDisplayName (the last occurrence in the file)
+// as the profile identity, not the nested ones inside PayloadContent.
+func TestExtractMobileconfigName(t *testing.T) {
+	// Top-level PayloadDisplayName after PayloadContent array — should return
+	// the top-level one (last occurrence), not the inner one.
+	plist := `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>PayloadDisplayName</key>
+			<string>Inner Profile</string>
+		</dict>
+	</array>
+	<key>PayloadDisplayName</key>
+	<string>Top Level Name</string>
+</dict>
+</plist>`
+	name := extractMobileconfigName([]byte(plist))
+	if name != "Top Level Name" {
+		t.Errorf("expected %q, got %q", "Top Level Name", name)
+	}
+
+	// Real-world pattern: inner PayloadDisplayName is human-friendly ("Google Chrome"),
+	// top-level PayloadDisplayName matches the filename ("google_chrome-config").
+	// Fleet uses the top-level one.
+	realWorld := `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>PayloadDisplayName</key>
+			<string>Google Chrome</string>
+			<key>PayloadType</key>
+			<string>com.google.Chrome</string>
+		</dict>
+	</array>
+	<key>PayloadDisplayName</key>
+	<string>google_chrome-config</string>
+	<key>PayloadIdentifier</key>
+	<string>com.fleetdm.fleet.mdm.custom.google_chrome-config</string>
+</dict>
+</plist>`
+	name = extractMobileconfigName([]byte(realWorld))
+	if name != "google_chrome-config" {
+		t.Errorf("expected %q, got %q", "google_chrome-config", name)
+	}
+
+	// No PayloadContent — single PayloadDisplayName
+	simple := `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+	<key>PayloadDisplayName</key>
+	<string>Simple Profile</string>
+</dict>
+</plist>`
+	name = extractMobileconfigName([]byte(simple))
+	if name != "Simple Profile" {
+		t.Errorf("expected %q, got %q", "Simple Profile", name)
+	}
+
+	// No PayloadDisplayName at all
+	empty := `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+	<key>PayloadType</key>
+	<string>Configuration</string>
+</dict>
+</plist>`
+	name = extractMobileconfigName([]byte(empty))
+	if name != "" {
+		t.Errorf("expected empty string, got %q", name)
+	}
+}
+
+// TestExtractProfileNameUsesFilenameForNonMobileconfig verifies that .json and
+// .xml profiles use the filename (not content) as the identity, matching Fleet's
+// behavior (see SameProfileNameUploadErrorMsg in Fleet source).
+func TestExtractProfileNameUsesFilenameForNonMobileconfig(t *testing.T) {
+	// Create a .json file with a PayloadDisplayName that differs from filename
+	dir := t.TempDir()
+	jsonFile := filepath.Join(dir, "my-declaration.json")
+	os.WriteFile(jsonFile, []byte(`{"PayloadDisplayName": "Different Name"}`), 0o644)
+
+	// extractProfileName should return "" for .json (caller falls back to filename)
+	name := extractProfileName(jsonFile)
+	if name != "" {
+		t.Errorf("expected empty string for .json file, got %q", name)
+	}
+
+	// Same for .xml
+	xmlFile := filepath.Join(dir, "my-policy.xml")
+	os.WriteFile(xmlFile, []byte(`<Policy><Name>Different</Name></Policy>`), 0o644)
+	name = extractProfileName(xmlFile)
+	if name != "" {
+		t.Errorf("expected empty string for .xml file, got %q", name)
+	}
+}
+
+// TestExtractProfileNameSizeGuard verifies that oversized files are rejected.
+func TestExtractProfileNameSizeGuard(t *testing.T) {
+	dir := t.TempDir()
+	bigFile := filepath.Join(dir, "huge.mobileconfig")
+	// Create a file just over the limit (write 11 MB of zeros)
+	f, _ := os.Create(bigFile)
+	f.Write(make([]byte, 11<<20))
+	f.Close()
+
+	name := extractProfileName(bigFile)
+	if name != "" {
+		t.Errorf("expected empty string for oversized file, got %q", name)
+	}
+}
+
+// TestParseTestdataTeamFilter verifies that team filtering works against testdata.
+func TestParseTestdataTeamFilter(t *testing.T) {
+	root := testutil.TestdataRoot(t)
+
+	repo, err := ParseRepo(root, "Workstations", "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+
+	if len(repo.Teams) != 1 {
+		t.Fatalf("expected 1 team (filtered), got %d", len(repo.Teams))
+	}
+	if repo.Teams[0].Name != "Workstations" {
+		t.Errorf("team name: got %q", repo.Teams[0].Name)
+	}
+}
+
+// TestParseRepoErrors consolidates error-case tests into a single table-driven test.
+func TestParseRepoErrors(t *testing.T) {
+	tests := []struct {
+		name         string
+		setup        func(root string) // create files under root
+		wantErrCount int               // minimum expected errors (0 = just check > 0)
+		wantErrMsg   string            // substring to find in at least one error message
+	}{
+		{
+			name:       "broken path reference",
+			wantErrMsg: "nonexistent.yml",
+			setup: func(root string) {
+				teamsDir := filepath.Join(root, "teams")
+				os.MkdirAll(teamsDir, 0o755)
+				os.WriteFile(filepath.Join(teamsDir, "broken.yml"), []byte(`name: Broken
+policies:
+  - path: ../policies/nonexistent.yml
+queries: []
+agent_options: {}
+controls: {}
+software: {}
+team_settings: {}
+`), 0o644)
+			},
+		},
+		{
+			name:       "missing teams directory",
+			wantErrMsg: "teams",
+			setup:      func(root string) {}, // empty dir, no teams/
+		},
+		{
+			name:       "missing name field",
+			wantErrMsg: "name",
+			setup: func(root string) {
+				teamsDir := filepath.Join(root, "teams")
+				os.MkdirAll(teamsDir, 0o755)
+				os.WriteFile(filepath.Join(teamsDir, "bad.yml"), []byte(`policies: []
+queries: []
+`), 0o644)
+			},
+		},
+		{
+			name:       "unknown top-level key",
+			wantErrMsg: `unknown top-level key: "bogus_key"`,
+			setup: func(root string) {
+				teamsDir := filepath.Join(root, "teams")
+				os.MkdirAll(teamsDir, 0o755)
+				os.WriteFile(filepath.Join(teamsDir, "test.yml"), []byte(`name: Test
+bogus_key: true
+policies: []
+queries: []
+`), 0o644)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			tt.setup(root)
+
+			repo, err := ParseRepo(root, "", "")
+			if err != nil {
+				t.Fatalf("ParseRepo: %v", err)
+			}
+
+			if len(repo.Errors) == 0 {
+				t.Fatal("expected parse errors, got none")
+			}
+
+			if tt.wantErrMsg != "" {
+				found := false
+				for _, e := range repo.Errors {
+					if strings.Contains(e.Message, tt.wantErrMsg) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("expected error containing %q, got: %v", tt.wantErrMsg, repo.Errors)
+				}
+			}
+		})
+	}
+}
+
+func TestValidatePlatform(t *testing.T) {
+	tests := []struct {
+		input   string
+		invalid []string
+	}{
+		{"darwin", nil},
+		{"windows", nil},
+		{"linux", nil},
+		{"chrome", nil},
+		{"darwin,windows", nil},
+		{"darwin,windows,linux", nil},
+		{"", nil},
+		{"macos", []string{"macos"}},
+		{"darwin,macos", []string{"macos"}},
+		{"osx", []string{"osx"}},
+	}
+
+	for _, tt := range tests {
+		invalid := ValidatePlatform(tt.input)
+		if len(invalid) != len(tt.invalid) {
+			t.Errorf("ValidatePlatform(%q): got %v, want %v", tt.input, invalid, tt.invalid)
+		}
+	}
+}
+
+func TestValidateLogging(t *testing.T) {
+	tests := []struct {
+		input string
+		valid bool
+	}{
+		{"snapshot", true},
+		{"differential", true},
+		{"differential_ignore_removals", true},
+		{"", true},
+		{"invalid", false},
+	}
+
+	for _, tt := range tests {
+		if ValidateLogging(tt.input) != tt.valid {
+			t.Errorf("ValidateLogging(%q): got %v, want %v", tt.input, !tt.valid, tt.valid)
+		}
+	}
+}
+
+// TestParseRepoDuplicateSoftwareRefs verifies duplicate software ref detection.
+func TestParseRepoDuplicateSoftwareRefs(t *testing.T) {
+	root := t.TempDir()
+
+	teamsDir := filepath.Join(root, "teams")
+	softwareDir := filepath.Join(root, "software", "windows", "dup-app")
+	os.MkdirAll(teamsDir, 0o755)
+	os.MkdirAll(softwareDir, 0o755)
+
+	pkgYAML := `url: https://downloads.example.com/dup-app.msi
+self_service: false
+`
+	os.WriteFile(filepath.Join(softwareDir, "dup-app.yml"), []byte(pkgYAML), 0o644)
+
+	teamYAML := `name: Workstations
+policies: []
+queries: []
+agent_options: {}
+controls: {}
+software:
+  packages:
+    - path: ../software/windows/dup-app/dup-app.yml
+      self_service: true
+    - path: ../software/windows/dup-app/dup-app.yml
+      self_service: false
+team_settings: {}
+`
+	os.WriteFile(filepath.Join(teamsDir, "workstations.yml"), []byte(teamYAML), 0o644)
+
+	repo, err := ParseRepo(root, "", "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Teams) != 1 {
+		t.Fatalf("expected 1 team, got %d", len(repo.Teams))
+	}
+
+	if len(repo.Teams[0].Software.Packages) != 1 {
+		t.Fatalf("expected 1 package after duplicate filtering, got %d", len(repo.Teams[0].Software.Packages))
+	}
+
+	foundDupErr := false
+	for _, e := range repo.Errors {
+		if strings.Contains(e.Message, "duplicate software package reference") {
+			foundDupErr = true
+			break
+		}
+	}
+	if !foundDupErr {
+		t.Fatalf("expected duplicate software package error, got: %+v", repo.Errors)
+	}
+}

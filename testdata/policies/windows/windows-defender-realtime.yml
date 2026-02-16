@@ -1,0 +1,7 @@
+- name: "[Windows] Defender Real-time Protection"
+  description: Ensures Windows Defender real-time protection is active.
+  resolution: |
+    Open Windows Security > Virus & threat protection > Manage settings and enable Real-time protection.
+  query: "SELECT 1 FROM windows_security_center WHERE antivirus = 'Good';"
+  platform: windows
+  critical: true

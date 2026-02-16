@@ -1,0 +1,10 @@
+name: Servers
+team_settings: {}
+agent_options: {}
+policies:
+  - path: ../policies/linux/linux-ssh-root-disabled.yml
+queries:
+  - path: ../queries/shared/uptime.yml
+  - path: ../queries/shared/os-version.yml
+controls: {}
+software: {}

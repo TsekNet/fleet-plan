@@ -1,0 +1,17 @@
+- name: macOS 14+
+  description: Hosts running macOS 14 (Sonoma) or later
+  query: "SELECT 1 FROM os_version WHERE major >= 14 AND platform = 'darwin';"
+  platform: darwin
+  label_membership_type: dynamic
+
+- name: Windows 11
+  description: Hosts running Windows 11
+  query: "SELECT 1 FROM os_version WHERE name LIKE '%Windows 11%';"
+  platform: windows
+  label_membership_type: dynamic
+
+- name: Ubuntu 24.04
+  description: Hosts running Ubuntu 24.04 LTS
+  query: "SELECT 1 FROM os_version WHERE name = 'Ubuntu' AND major = 24 AND minor = 4;"
+  platform: linux
+  label_membership_type: dynamic

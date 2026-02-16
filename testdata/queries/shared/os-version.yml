@@ -1,0 +1,6 @@
+- name: OS Version
+  description: Collects operating system version details.
+  query: "SELECT name, version, major, minor, patch, platform FROM os_version;"
+  interval: 86400
+  platform: darwin,windows,linux
+  logging: snapshot

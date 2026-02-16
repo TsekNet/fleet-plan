@@ -1,0 +1,6 @@
+- name: Disk Usage
+  description: Collects disk usage information across all platforms.
+  query: "SELECT path, type, blocks_size, blocks, blocks_free, blocks_available FROM mounts WHERE type != 'tmpfs';"
+  interval: 3600
+  platform: darwin,windows,linux
+  logging: snapshot

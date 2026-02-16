@@ -1,0 +1,9 @@
+- name: "[Linux] SSH Root Login Disabled"
+  description: Verifies that SSH root login is disabled.
+  resolution: |
+    Edit /etc/ssh/sshd_config and set PermitRootLogin to "no", then restart sshd.
+  query: "SELECT 1 FROM augeas WHERE path = '/files/etc/ssh/sshd_config/PermitRootLogin' AND value = 'no';"
+  platform: linux
+  critical: false
+  labels_include_any:
+    - Ubuntu 24.04

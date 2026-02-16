@@ -1,0 +1,27 @@
+name: Workstations
+team_settings:
+  secrets:
+    - secret: "$ENROLL_SECRET_WORKSTATIONS"
+agent_options:
+  config:
+    options:
+      distributed_interval: 10
+policies:
+  - path: ../policies/mac/macos-filevault-enabled.yml
+  - path: ../policies/mac/macos-gatekeeper-enabled.yml
+  - path: ../policies/windows/windows-defender-realtime.yml
+  - path: ../policies/linux/linux-ssh-root-disabled.yml
+  - path: ../policies/linux/linux-firewall-enabled.yml
+queries:
+  - path: ../queries/shared/disk-usage.yml
+  - path: ../queries/shared/uptime.yml
+  - path: ../queries/shared/os-version.yml
+controls:
+  macos_settings:
+    custom_settings:
+      - path: ../profiles/mac/renamed-fulldisk.mobileconfig
+software:
+  packages:
+    - path: ../software/mac/slack/slack.yml
+    - path: ../software/windows/example-app/example-app.yml
+      self_service: true

@@ -1,0 +1,5 @@
+- name: "Global System Info"
+  description: Collect basic system information from all hosts
+  query: "SELECT hostname, cpu_brand, physical_memory FROM system_info;"
+  interval: 86400
+  platform: darwin,windows,linux
