@@ -99,7 +99,7 @@ type FleetState struct {
 	Labels                 []Label
 	FleetMaintainedCatalog []FleetMaintainedApp
 	Config                 map[string]any // from GET /api/v1/fleet/config
-	GlobalPolicies         []Policy       // from GET /api/v1/fleet/policies (teamID=0)
+	GlobalPolicies         []Policy       // from GET /api/v1/fleet/global/policies (teamID=0)
 	GlobalQueries          []Query        // from GET /api/v1/fleet/queries (teamID=0)
 }
 
@@ -290,7 +290,7 @@ func (c *Client) GetTeams(ctx context.Context) ([]Team, error) {
 
 // GetPolicies fetches policies for a team (0 = global) with pagination.
 func (c *Client) GetPolicies(ctx context.Context, teamID uint) ([]Policy, error) {
-	apiPath := "/api/v1/fleet/policies"
+	apiPath := "/api/v1/fleet/global/policies"
 	if teamID > 0 {
 		apiPath = fmt.Sprintf("/api/v1/fleet/teams/%d/policies", teamID)
 	}

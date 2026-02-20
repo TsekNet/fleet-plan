@@ -143,7 +143,7 @@ func TestGetPoliciesPathRouting(t *testing.T) {
 		teamID   uint
 		wantPath string
 	}{
-		{name: "global policies", teamID: 0, wantPath: "/api/v1/fleet/policies"},
+		{name: "global policies", teamID: 0, wantPath: "/api/v1/fleet/global/policies"},
 		{name: "team 1 policies", teamID: 1, wantPath: "/api/v1/fleet/teams/1/policies"},
 		{name: "team 42 policies", teamID: 42, wantPath: "/api/v1/fleet/teams/42/policies"},
 	}
@@ -164,6 +164,41 @@ func TestGetPoliciesPathRouting(t *testing.T) {
 			}
 			if gotPath != tt.wantPath {
 				t.Errorf("path: got %q, want %q", gotPath, tt.wantPath)
+			}
+		})
+	}
+}
+
+func TestGetPoliciesPageParams(t *testing.T) {
+	tests := []struct {
+		name   string
+		teamID uint
+	}{
+		{name: "global policies send page params", teamID: 0},
+		{name: "team policies send page params", teamID: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("page") == "" {
+					t.Errorf("expected page param, got none")
+				}
+				if r.URL.Query().Get("per_page") == "" {
+					t.Errorf("expected per_page param, got none")
+				}
+				json.NewEncoder(w).Encode(policiesResponse{Policies: []Policy{
+					{ID: 1, Name: "A Policy"},
+				}})
+			}))
+			defer ts.Close()
+
+			c := testClient(t, ts, "tok")
+			policies, err := c.GetPolicies(context.Background(), tt.teamID)
+			if err != nil {
+				t.Fatalf("GetPolicies: %v", err)
+			}
+			if len(policies) != 1 {
+				t.Fatalf("expected 1 policy, got %d", len(policies))
 			}
 		})
 	}
