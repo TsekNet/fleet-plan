@@ -18,10 +18,9 @@ internal/
     terminal.go         ANSI-colored terminal renderer (truncation, diff context)
     json.go             JSON renderer
     markdown.go         Markdown renderer
-    gen_screenshot.go   Screenshot generator (//go:build ignore)
   testutil/             Shared test helpers (TestdataRoot)
 testdata/               Realistic fleet-gitops fixture repo for tests
-assets/                 Logo and screenshot images
+assets/                 Logo, demo GIF, vhs-demo.go, demo.tape (see assets/README.md)
 docs/                   Architecture and API endpoint docs
 ```
 
@@ -93,16 +92,13 @@ Whitespace is normalized before comparison to avoid false positives from YAML vs
 | JSON | `--format json` | Machine-readable, all fields |
 | Markdown | `--format markdown` | For CI comments / MR descriptions |
 
-## Screenshot generation
+## Demo GIF
 
-`gen_screenshot.go` (`//go:build ignore`) renders representative output from testdata fixtures for the README screenshot. Regenerate with:
+`assets/vhs-demo.go` renders representative output from testdata for the README demo GIF. See [assets/README.md](../assets/README.md) for prerequisites and setup. Regenerate:
 
 ```bash
-go run ./internal/output/gen_screenshot.go > /tmp/raw.txt
-termshot --raw-read /tmp/raw.txt -f assets/screenshot.png -C 100
+vhs assets/demo.tape
 ```
-
-Requires a PTY wrapper (e.g., `script -qec`) for ANSI color output when piping.
 
 ## Tests
 

@@ -14,7 +14,7 @@ Shows what will change in your Fleet environment before you apply. Compares flee
 
 Run in CI **before** `fleetctl gitops --dry-run`. fleet-plan shows *what* changes. fleetctl validates *whether it's valid*.
 
-![fleet-plan terminal diff](assets/screenshot.png)
+![fleet-plan terminal diff](assets/demo.gif)
 
 > **Disclaimer:** This was created as a fun side project, not affiliated with any company.
 
