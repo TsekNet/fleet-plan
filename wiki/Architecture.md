@@ -1,6 +1,10 @@
 # Architecture
 
+**[← Wiki Home](Home)** · [API Endpoints](API-Endpoints)
+
 Single-binary Go CLI. Parses fleet-gitops YAML, fetches current state from Fleet API (GET only), computes semantic diff, renders output.
+
+---
 
 ## Layout
 
@@ -24,6 +28,8 @@ assets/                 Logo, demo GIF, vhs-demo.go, demo.tape (see assets/READM
 docs/                   Architecture and API endpoint docs
 ```
 
+---
+
 ## Data flow
 
 ```mermaid
@@ -39,11 +45,15 @@ flowchart LR
     G -->|markdown| J[markdown.go]
 ```
 
+---
+
 ## API client
 
 `FetchAll` parallelizes all GET requests via `errgroup`. When `default.yml` has global sections, it also fetches `/config`, global policies, and global queries. HTTPS is enforced by default (`FLEET_PLAN_INSECURE=1` to override for local dev).
 
-See [api-endpoints.md](api-endpoints.md) for the full list.
+See [API Endpoints](API-Endpoints) for the full list.
+
+---
 
 ## Auth resolution
 
@@ -62,9 +72,13 @@ Config file supports multiple contexts:
 }
 ```
 
+---
+
 ## Parser
 
 Walks `teams/*.yml`, resolves `path:` references, produces `ParsedRepo`. Also parses `default.yml` for labels, `org_settings`, `agent_options`, `controls`, and global policies/queries. All path references are validated against the repo root to prevent traversal.
+
+---
 
 ## Diff engine
 
@@ -83,6 +97,8 @@ Compares `FleetState` (API) vs `ParsedRepo` (YAML). Produces `[]DiffResult` per 
 
 Whitespace is normalized before comparison to avoid false positives from YAML vs API newline differences. Per-field diffs are stored in `ResourceChange.Fields` for both added and modified resources.
 
+---
+
 ## Output modes
 
 | Mode | Flag | Description |
@@ -92,13 +108,17 @@ Whitespace is normalized before comparison to avoid false positives from YAML vs
 | JSON | `--format json` | Machine-readable, all fields |
 | Markdown | `--format markdown` | For CI comments / MR descriptions |
 
+---
+
 ## Demo GIF
 
-`assets/vhs-demo.go` renders representative output from testdata for the README demo GIF. See [assets/README.md](../assets/README.md) for prerequisites and setup. Regenerate:
+`assets/vhs-demo.go` renders representative output from testdata for the README demo GIF. See [assets/README.md](https://github.com/TsekNet/fleet-plan/blob/main/assets/README.md) for prerequisites and setup. Regenerate:
 
 ```bash
 vhs assets/demo.tape
 ```
+
+---
 
 ## Tests
 

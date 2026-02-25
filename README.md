@@ -86,10 +86,9 @@ fleet-plan
 fleetctl gitops -f default.yml --dry-run
 ```
 
-## Docs
+## Documentation
 
-- **[Architecture](docs/architecture.md)** -- data flow, packages, diff matching keys
-- **[API endpoints](docs/api-endpoints.md)** -- every GET endpoint fleet-plan calls
+**[📚 Wiki](https://github.com/TsekNet/fleet-plan/wiki)** — Architecture, API Endpoints. Wiki source lives in `wiki/` in this repo.
 
 ## Contributing
 
