@@ -91,7 +91,7 @@ fleetctl gitops -f default.yml --dry-run
 
 ## Documentation
 
-**[📚 Wiki](https://github.com/TsekNet/fleet-plan/wiki)** — Architecture, API Endpoints. Wiki source lives in `wiki/` in this repo.
+See [docs/](docs/) for more information about fleet-plan.
 
 ## Known Limitations
 

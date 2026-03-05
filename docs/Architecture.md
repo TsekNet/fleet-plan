@@ -1,7 +1,5 @@
 # Architecture
 
-**[← Wiki Home](Home)** · [API Endpoints](API-Endpoints)
-
 Single-binary Go CLI. Parses fleet-gitops YAML, fetches current state from Fleet API (GET only), computes semantic diff, renders output.
 
 ---
@@ -51,7 +49,7 @@ flowchart LR
 
 `FetchAll` parallelizes all GET requests via `errgroup`. When `default.yml` has global sections, it also fetches `/config`, global policies, and global queries. HTTPS is enforced by default (`FLEET_PLAN_INSECURE=1` to override for local dev).
 
-See [API Endpoints](API-Endpoints) for the full list.
+See [API Endpoints](API-Endpoints.md) for the full list.
 
 ---
 

@@ -1,7 +1,5 @@
 # API Endpoints
 
-**[← Wiki Home](Home)** · [Architecture](Architecture)
-
 All read-only. fleet-plan never writes to your Fleet server.
 
 | Method | Endpoint | Purpose |
