@@ -233,12 +233,21 @@ type rawProfileRef struct {
 
 // ---------- Parser ----------
 
+func matchesAnyTeam(name string, filters []string) bool {
+	for _, f := range filters {
+		if strings.EqualFold(name, f) {
+			return true
+		}
+	}
+	return false
+}
+
 // ParseRepo parses the fleet-gitops repository at the given root directory.
-// If teamFilter is non-empty, only that team is parsed.
+// If teamFilters is non-empty, only matching teams are parsed.
 // If defaultFile is non-empty, it is used as the path to default.yml (the
 // pre-merged global config). Otherwise, the parser looks for default.yml in
 // the repo root directory.
-func ParseRepo(root string, teamFilter string, defaultFile string) (*ParsedRepo, error) {
+func ParseRepo(root string, teamFilters []string, defaultFile string) (*ParsedRepo, error) {
 	repo := &ParsedRepo{}
 	repoRoot = root
 
@@ -269,7 +278,7 @@ func ParseRepo(root string, teamFilter string, defaultFile string) (*ParsedRepo,
 			continue
 		}
 
-		if teamFilter != "" && !strings.EqualFold(team.Name, teamFilter) {
+		if len(teamFilters) > 0 && !matchesAnyTeam(team.Name, teamFilters) {
 			continue
 		}
 

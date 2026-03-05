@@ -24,7 +24,8 @@ builds:
       - arm64
 
 archives:
-  - format: binary
+  - formats:
+      - binary
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:

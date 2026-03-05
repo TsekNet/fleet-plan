@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -103,6 +104,30 @@ func TestHTTPErrorCodes(t *testing.T) {
 	}
 }
 
+// ---------- isPermissionError ----------
+
+func TestIsPermissionError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "non-HTTP error", err: fmt.Errorf("network down"), want: false},
+		{name: "403", err: &HTTPError{StatusCode: 403}, want: true},
+		{name: "404", err: &HTTPError{StatusCode: 404}, want: true},
+		{name: "500", err: &HTTPError{StatusCode: 500}, want: false},
+		{name: "wrapped 403", err: fmt.Errorf("outer: %w", &HTTPError{StatusCode: 403}), want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isPermissionError(tt.err); got != tt.want {
+				t.Errorf("isPermissionError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // ---------- GetTeams ----------
 
 func TestGetTeams(t *testing.T) {
@@ -143,7 +168,7 @@ func TestGetPoliciesPathRouting(t *testing.T) {
 		teamID   uint
 		wantPath string
 	}{
-		{name: "global policies", teamID: 0, wantPath: "/api/v1/fleet/policies"},
+		{name: "global policies", teamID: 0, wantPath: "/api/v1/fleet/global/policies"},
 		{name: "team 1 policies", teamID: 1, wantPath: "/api/v1/fleet/teams/1/policies"},
 		{name: "team 42 policies", teamID: 42, wantPath: "/api/v1/fleet/teams/42/policies"},
 	}
@@ -164,6 +189,41 @@ func TestGetPoliciesPathRouting(t *testing.T) {
 			}
 			if gotPath != tt.wantPath {
 				t.Errorf("path: got %q, want %q", gotPath, tt.wantPath)
+			}
+		})
+	}
+}
+
+func TestGetPoliciesPageParams(t *testing.T) {
+	tests := []struct {
+		name   string
+		teamID uint
+	}{
+		{name: "global policies send page params", teamID: 0},
+		{name: "team policies send page params", teamID: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("page") == "" {
+					t.Errorf("expected page param, got none")
+				}
+				if r.URL.Query().Get("per_page") == "" {
+					t.Errorf("expected per_page param, got none")
+				}
+				json.NewEncoder(w).Encode(policiesResponse{Policies: []Policy{
+					{ID: 1, Name: "A Policy"},
+				}})
+			}))
+			defer ts.Close()
+
+			c := testClient(t, ts, "tok")
+			policies, err := c.GetPolicies(context.Background(), tt.teamID)
+			if err != nil {
+				t.Fatalf("GetPolicies: %v", err)
+			}
+			if len(policies) != 1 {
+				t.Fatalf("expected 1 policy, got %d", len(policies))
 			}
 		})
 	}
@@ -423,7 +483,7 @@ func TestFetchAll(t *testing.T) {
 	mux.HandleFunc("/api/v1/fleet/software/fleet_maintained_apps", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(fleetMaintainedAppsResponse{})
 	})
-	mux.HandleFunc("/api/v1/fleet/mdm/profiles", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/fleet/configuration_profiles", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(profilesResponse{})
 	})
 
@@ -446,7 +506,145 @@ func TestFetchAll(t *testing.T) {
 	}
 }
 
-// ---------- FetchAll fleet maintained catalog fallback ----------
+// ---------- FetchAll permission fallback tests ----------
+
+func TestFetchAllSoftware403(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int
+		wantNil    bool
+		wantErr    bool
+	}{
+		{name: "200 returns software", status: 200},
+		{name: "403 gracefully returns nil", status: 403, wantNil: true},
+		{name: "500 returns error", status: 500, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/api/v1/fleet/teams", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(teamsResponse{Teams: []Team{{ID: 1, Name: "T"}}})
+			})
+			mux.HandleFunc("/api/v1/fleet/labels", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(labelsResponse{})
+			})
+			mux.HandleFunc("/api/v1/fleet/software/fleet_maintained_apps", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(fleetMaintainedAppsResponse{})
+			})
+			mux.HandleFunc("/api/v1/fleet/teams/1/policies", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(policiesResponse{})
+			})
+			mux.HandleFunc("/api/v1/fleet/queries", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(queriesResponse{})
+			})
+			mux.HandleFunc("/api/v1/fleet/software/titles", func(w http.ResponseWriter, r *http.Request) {
+				if tt.status != 200 {
+					w.WriteHeader(tt.status)
+					w.Write([]byte(`{"message":"forbidden"}`))
+					return
+				}
+				json.NewEncoder(w).Encode(softwareResponse{
+					SoftwareTitles: []SoftwareTitle{{ID: 1, Name: "Chrome"}},
+				})
+			})
+			mux.HandleFunc("/api/v1/fleet/configuration_profiles", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(profilesResponse{})
+			})
+
+			ts := httptest.NewServer(mux)
+			defer ts.Close()
+
+			c := testClient(t, ts, "tok")
+			state, err := c.FetchAll(context.Background())
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("FetchAll: %v", err)
+			}
+			if tt.wantNil && state.Teams[0].SoftwareTitles != nil {
+				t.Errorf("expected nil SoftwareTitles, got %v", state.Teams[0].SoftwareTitles)
+			}
+			if !tt.wantNil && len(state.Teams[0].SoftwareTitles) != 1 {
+				t.Errorf("expected 1 software title, got %d", len(state.Teams[0].SoftwareTitles))
+			}
+		})
+	}
+}
+
+func TestFetchAllProfiles403(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		wantNil bool
+		wantErr bool
+	}{
+		{name: "200 returns profiles", status: 200},
+		{name: "403 gracefully returns nil", status: 403, wantNil: true},
+		{name: "500 returns error", status: 500, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/api/v1/fleet/teams", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(teamsResponse{Teams: []Team{{ID: 1, Name: "T"}}})
+			})
+			mux.HandleFunc("/api/v1/fleet/labels", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(labelsResponse{})
+			})
+			mux.HandleFunc("/api/v1/fleet/software/fleet_maintained_apps", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(fleetMaintainedAppsResponse{})
+			})
+			mux.HandleFunc("/api/v1/fleet/teams/1/policies", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(policiesResponse{})
+			})
+			mux.HandleFunc("/api/v1/fleet/queries", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(queriesResponse{})
+			})
+			mux.HandleFunc("/api/v1/fleet/software/titles", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(softwareResponse{})
+			})
+			mux.HandleFunc("/api/v1/fleet/configuration_profiles", func(w http.ResponseWriter, r *http.Request) {
+				if tt.status != 200 {
+					w.WriteHeader(tt.status)
+					w.Write([]byte(`{"message":"forbidden"}`))
+					return
+				}
+				json.NewEncoder(w).Encode(profilesResponse{
+					Profiles: []Profile{{ProfileUUID: "p1", Name: "WiFi"}},
+				})
+			})
+
+			ts := httptest.NewServer(mux)
+			defer ts.Close()
+
+			c := testClient(t, ts, "tok")
+			state, err := c.FetchAll(context.Background())
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("FetchAll: %v", err)
+			}
+			if tt.wantNil && state.Teams[0].Profiles != nil {
+				t.Errorf("expected nil Profiles, got %v", state.Teams[0].Profiles)
+			}
+			if !tt.wantNil && len(state.Teams[0].Profiles) != 1 {
+				t.Errorf("expected 1 profile, got %d", len(state.Teams[0].Profiles))
+			}
+		})
+	}
+}
 
 func TestFetchAllFleetMaintainedFallback(t *testing.T) {
 	tests := []struct {
@@ -489,7 +687,7 @@ func TestFetchAllFleetMaintainedFallback(t *testing.T) {
 			mux.HandleFunc("/api/v1/fleet/software/titles", func(w http.ResponseWriter, r *http.Request) {
 				json.NewEncoder(w).Encode(softwareResponse{})
 			})
-			mux.HandleFunc("/api/v1/fleet/mdm/profiles", func(w http.ResponseWriter, r *http.Request) {
+			mux.HandleFunc("/api/v1/fleet/configuration_profiles", func(w http.ResponseWriter, r *http.Request) {
 				json.NewEncoder(w).Encode(profilesResponse{})
 			})
 

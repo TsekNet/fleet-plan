@@ -14,7 +14,7 @@ Shows what will change in your Fleet environment before you apply. Compares flee
 
 Run in CI **before** `fleetctl gitops --dry-run`. fleet-plan shows *what* changes. fleetctl validates *whether it's valid*.
 
-![fleet-plan terminal diff](assets/screenshot.png)
+![fleet-plan terminal diff](assets/demo.gif)
 
 > **Disclaimer:** This was created as a fun side project, not affiliated with any company.
 
@@ -33,6 +33,9 @@ fleet-plan
 
 # Single team
 fleet-plan --team Workstations
+
+# Multiple teams
+fleet-plan --team Workstations --team Servers
 
 # Pre-merged default.yml from CI
 fleet-plan --default /tmp/default.yml
@@ -86,10 +89,13 @@ fleet-plan
 fleetctl gitops -f default.yml --dry-run
 ```
 
-## Docs
+## Documentation
 
-- **[Architecture](docs/architecture.md)** -- data flow, packages, diff matching keys
-- **[API endpoints](docs/api-endpoints.md)** -- every GET endpoint fleet-plan calls
+**[📚 Wiki](https://github.com/TsekNet/fleet-plan/wiki)** — Architecture, API Endpoints. Wiki source lives in `wiki/` in this repo.
+
+## Known Limitations
+
+- **GitOps API token cannot read software or profiles.** The `gitops` role returns HTTP 403 on `/software/titles` and `/mdm/profiles`. `fleet-plan` handles this gracefully by skipping those resources, but the diff will not include software or profile changes. Tracked upstream: [fleetdm/fleet#38044](https://github.com/fleetdm/fleet/issues/38044).
 
 ## Contributing
 

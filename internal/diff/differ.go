@@ -4,6 +4,7 @@
 package diff
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
@@ -20,14 +21,15 @@ var wsRE = regexp.MustCompile(`\s+`)
 
 // DiffResult holds the diff for a single team (or global scope).
 type DiffResult struct {
-	Team     string // "(global)" for default.yml scope
-	Policies ResourceDiff
-	Queries  ResourceDiff
-	Software ResourceDiff
-	Profiles ResourceDiff
-	Labels   LabelValidation
-	Config   []ConfigChange // org_settings, agent_options, controls diffs
-	Errors   []string
+	Team                 string // "(global)" for default.yml scope
+	Policies             ResourceDiff
+	Queries              ResourceDiff
+	Software             ResourceDiff
+	Profiles             ResourceDiff
+	Labels               LabelValidation
+	Config               []ConfigChange // org_settings, agent_options, controls diffs
+	Errors               []string
+	SkippedConfigSections []string // config sections absent from API (e.g. "agent_options")
 }
 
 // ConfigChange represents a change in a top-level config section.
@@ -82,12 +84,23 @@ type LabelRef struct {
 	ReferencedBy string // which policy/query references it
 }
 
+func matchesAnyTeam(name string, filters []string) bool {
+	for _, f := range filters {
+		if strings.EqualFold(name, f) {
+			return true
+		}
+	}
+	return false
+}
+
 // ---------- Diff engine ----------
 
 // Diff computes the diff between current Fleet state and proposed YAML for all
-// teams. If teamFilter is non-empty, only that team is diffed.
+// teams. If teamFilters is non-empty, only matching teams are diffed.
+// If changedFiles is non-empty, only resources whose SourceFile matches are
+// included in the output (MR-scoped filtering).
 // Global config from default.yml is diffed when proposed.Global is non-nil.
-func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilter string) []DiffResult {
+func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []string, changedFiles []string) []DiffResult {
 	var results []DiffResult
 
 	// Build label lookup from API
@@ -97,12 +110,11 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilter strin
 	}
 
 	// --- Global config diff (default.yml) ---
-	if proposed.Global != nil && teamFilter == "" {
+	if proposed.Global != nil && len(teamFilters) == 0 {
 		globalResult := DiffResult{Team: "(global)"}
 
-		// Diff org_settings, agent_options, controls
 		if current.Config != nil {
-			globalResult.Config = diffConfig(current.Config, proposed.Global)
+			globalResult.Config, globalResult.SkippedConfigSections = diffConfig(current.Config, proposed.Global)
 		}
 
 		// Diff global policies
@@ -122,7 +134,7 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilter strin
 	}
 
 	for _, proposedTeam := range proposed.Teams {
-		if teamFilter != "" && !strings.EqualFold(proposedTeam.Name, teamFilter) {
+		if len(teamFilters) > 0 && !matchesAnyTeam(proposedTeam.Name, teamFilters) {
 			continue
 		}
 
@@ -155,23 +167,41 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilter strin
 		} else {
 			result.Policies = diffPolicies(currentTeam.Policies, proposedTeam.Policies)
 			result.Queries = diffQueries(currentTeam.Queries, proposedTeam.Queries)
-			currentSoftware := currentTeam.Software
 
-			// Fleet's /teams API returns fleet_maintained_apps: null for some
-			// teams even when they have fleet-maintained apps configured. When
-			// the field is null but the YAML defines fleet-maintained apps,
-			// silently reconstruct the current state from software titles +
-			// the fleet-maintained catalog so we can produce an accurate diff.
-			if currentTeam.Software.FleetMaintained == nil &&
-				len(proposedTeam.Software.FleetMaintained) > 0 {
-				inferred := inferFleetMaintainedApps(currentTeam, current.FleetMaintainedCatalog)
-				currentSoftware.FleetMaintained = inferred // may be nil; that's fine
+			if currentTeam.SoftwareUnavailable {
+				result.Errors = append(result.Errors, "software diff skipped: API token lacks permission to read software titles")
+			} else {
+				currentSoftware := currentTeam.Software
+
+				// Fleet's /teams API returns fleet_maintained_apps: null for some
+				// teams even when they have fleet-maintained apps configured. When
+				// the field is null but the YAML defines fleet-maintained apps,
+				// silently reconstruct the current state from software titles +
+				// the fleet-maintained catalog so we can produce an accurate diff.
+				if currentTeam.Software.FleetMaintained == nil &&
+					len(proposedTeam.Software.FleetMaintained) > 0 {
+					inferred := inferFleetMaintainedApps(currentTeam, current.FleetMaintainedCatalog)
+					currentSoftware.FleetMaintained = inferred // may be nil; that's fine
+				}
+
+				result.Software = diffSoftware(currentSoftware, proposedTeam.Software)
 			}
 
-			result.Software = diffSoftware(currentSoftware, proposedTeam.Software)
-			var profileWarnings []string
-			result.Profiles, profileWarnings = diffProfiles(currentTeam.Profiles, proposedTeam.Profiles)
-			result.Errors = append(result.Errors, profileWarnings...)
+			if currentTeam.ProfilesUnavailable {
+				result.Errors = append(result.Errors, "profiles diff skipped: API token lacks permission to read profiles")
+			} else {
+				var profileWarnings []string
+				result.Profiles, profileWarnings = diffProfiles(currentTeam.Profiles, proposedTeam.Profiles)
+				result.Errors = append(result.Errors, profileWarnings...)
+			}
+		}
+
+		if len(changedFiles) > 0 {
+			sourceNames := buildSourceMap(proposedTeam)
+			result.Policies = filterResourceDiff(result.Policies, sourceNames, changedFiles)
+			result.Queries = filterResourceDiff(result.Queries, sourceNames, changedFiles)
+			result.Software = filterResourceDiff(result.Software, sourceNames, changedFiles)
+			result.Profiles = filterResourceDiff(result.Profiles, sourceNames, changedFiles)
 		}
 
 		result.Labels = validateLabels(proposedTeam, labelMap, changedNames(result.Policies))
@@ -179,6 +209,68 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilter strin
 	}
 
 	return results
+}
+
+func buildSourceMap(team parser.ParsedTeam) map[string]string {
+	m := make(map[string]string)
+	for _, p := range team.Policies {
+		m[p.Name] = p.SourceFile
+	}
+	for _, q := range team.Queries {
+		m[q.Name] = q.SourceFile
+	}
+	for _, p := range team.Software.Packages {
+		key := normalizeSoftwarePath(p.RefPath)
+		if key == "" {
+			key = inferSoftwarePathFromSource(p.SourceFile)
+		}
+		if key == "" {
+			key = normalizeSoftwarePath(p.URL)
+		}
+		if key != "" {
+			m[normalizeSoftwarePath(key)] = p.SourceFile
+		}
+	}
+	for _, f := range team.Software.FleetMaintained {
+		slug := normalizeSoftwarePath(f.Slug)
+		if slug != "" {
+			m["fleet app "+slug] = team.SourceFile
+		}
+	}
+	for _, p := range team.Profiles {
+		m[p.Name] = p.SourceFile
+	}
+	return m
+}
+
+func filterResourceDiff(rd ResourceDiff, sourceNames map[string]string, changedFiles []string) ResourceDiff {
+	match := func(name string) bool {
+		src, ok := sourceNames[name]
+		if !ok {
+			return true
+		}
+		for _, cf := range changedFiles {
+			if src == cf || strings.HasSuffix(src, "/"+cf) {
+				return true
+			}
+		}
+		return false
+	}
+	return ResourceDiff{
+		Added:    filterChanges(rd.Added, match),
+		Modified: filterChanges(rd.Modified, match),
+		Deleted:  filterChanges(rd.Deleted, match),
+	}
+}
+
+func filterChanges(changes []ResourceChange, keep func(string) bool) []ResourceChange {
+	var out []ResourceChange
+	for _, c := range changes {
+		if keep(c.Name) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // ---------- Per-resource diffing ----------
@@ -479,7 +571,7 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) Reso
 }
 
 func normalizeSoftwarePath(s string) string {
-	s = strings.TrimSpace(strings.ToLower(s))
+	s = strings.TrimSpace(s)
 	if s == "" {
 		return ""
 	}
@@ -695,24 +787,13 @@ func validateLabels(team parser.ParsedTeam, labelMap map[string]api.Label, chang
 
 // ---------- Global config diffing ----------
 
-// serverOnlyKeys are keys returned by the Fleet API that don't exist in YAML.
-// Skip these during comparison to avoid false positives.
-var serverOnlyKeys = map[string]bool{
-	"license":          true,
-	"logging":          true,
-	"update_interval":  true,
-	"vulnerabilities":  true,
-	"sandbox_enabled":  true,
-	"server_settings":  true, // server_url is set by Fleet, not YAML
-}
-
 // diffConfig compares the current Fleet config (from API) against proposed
 // global config sections from default.yml. Returns a list of config changes.
 // Skips values containing "$" (env var placeholders that Fleet substitutes).
-func diffConfig(apiConfig map[string]any, proposed *parser.ParsedGlobal) []ConfigChange {
+func diffConfig(apiConfig map[string]any, proposed *parser.ParsedGlobal) ([]ConfigChange, []string) {
 	var changes []ConfigChange
+	var skipped []string
 
-	// Compare each section the YAML defines
 	sections := map[string]map[string]any{
 		"org_settings":  proposed.OrgSettings,
 		"agent_options": proposed.AgentOptions,
@@ -724,13 +805,9 @@ func diffConfig(apiConfig map[string]any, proposed *parser.ParsedGlobal) []Confi
 			continue
 		}
 
-		// The API returns config as a flat structure (org_settings fields are
-		// at the top level, not nested under "org_settings"). Map section names
-		// to where they live in the API response.
 		var apiSection map[string]any
 		switch section {
 		case "org_settings":
-			// org_settings fields are spread across the top level of the API response
 			apiSection = apiConfig
 		case "agent_options":
 			if v, ok := apiConfig["agent_options"]; ok {
@@ -739,31 +816,40 @@ func diffConfig(apiConfig map[string]any, proposed *parser.ParsedGlobal) []Confi
 				}
 			}
 		case "controls":
-			// controls fields are spread across the top level (mdm, etc.)
-			apiSection = apiConfig
+			if v, ok := apiConfig["mdm"]; ok {
+				if m, ok := v.(map[string]any); ok {
+					apiSection = m
+				}
+			}
 		}
 
 		if apiSection == nil {
-			// Section doesn't exist in API — all proposed keys are new
-			flattenMap(proposedMap, "", func(key, val string) {
-				if !containsEnvVar(val) {
-					changes = append(changes, ConfigChange{
-						Section: section,
-						Key:     key,
-						New:     val,
-					})
-				}
-			})
+			skipped = append(skipped, section)
 			continue
 		}
 
-		// Recursive key-by-key comparison
+		// Recursive key-by-key comparison.
+		// Only report a diff when the API actually has a value for this key.
+		// If getNestedValue returns "" the API doesn't expose the field (e.g.
+		// agent_options sub-keys, sso_settings) and we can't determine whether
+		// the proposed value differs from what Fleet already has.
 		flattenMap(proposedMap, "", func(key, proposedVal string) {
 			if containsEnvVar(proposedVal) {
-				return // skip env var placeholders
+				return
+			}
+			if proposedVal == "<nil>" || proposedVal == "" {
+				return
 			}
 			apiVal := getNestedValue(apiSection, key)
-			if apiVal != proposedVal {
+			if apiVal == "<nil>" || apiVal == "" {
+				return
+			}
+			compareAPI, compareProposed := apiVal, proposedVal
+			if looksLikeJSON(apiVal) && looksLikeJSON(proposedVal) {
+				compareAPI = normalizeJSON(apiVal)
+				compareProposed = normalizeJSON(proposedVal)
+			}
+			if compareAPI != compareProposed {
 				changes = append(changes, ConfigChange{
 					Section: section,
 					Key:     key,
@@ -774,7 +860,7 @@ func diffConfig(apiConfig map[string]any, proposed *parser.ParsedGlobal) []Confi
 		})
 	}
 
-	return changes
+	return changes, skipped
 }
 
 // containsEnvVar returns true if the string contains a $ (env var placeholder).
@@ -782,23 +868,97 @@ func containsEnvVar(s string) bool {
 	return strings.Contains(s, "$")
 }
 
+func looksLikeJSON(s string) bool {
+	s = strings.TrimSpace(s)
+	return len(s) > 0 && (s[0] == '{' || s[0] == '[')
+}
+
+// normalizeJSON unmarshals a JSON string, recursively removes keys with empty
+// string values (""), empty arrays ([]), and null values, then re-marshals with
+// sorted keys. Returns the original string on error or if input is not JSON.
+// Used to compare semantically equivalent JSON where API includes empty keys
+// and YAML omits them.
+func normalizeJSON(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || (len(s) > 0 && s[0] != '{' && s[0] != '[') {
+		return s
+	}
+	var v any
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		return s
+	}
+	cleaned := removeEmptyJSONValues(v)
+	b, err := json.Marshal(cleaned)
+	if err != nil {
+		return s
+	}
+	return string(b)
+}
+
+func removeEmptyJSONValues(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := make(map[string]any)
+		for k, val := range x {
+			if val == nil {
+				continue
+			}
+			if s, ok := val.(string); ok && s == "" {
+				continue
+			}
+			if arr, ok := val.([]any); ok && len(arr) == 0 {
+				continue
+			}
+			out[k] = removeEmptyJSONValues(val)
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(x))
+		for _, elem := range x {
+			if elem == nil {
+				continue
+			}
+			if s, ok := elem.(string); ok && s == "" {
+				continue
+			}
+			if arr, ok := elem.([]any); ok && len(arr) == 0 {
+				continue
+			}
+			out = append(out, removeEmptyJSONValues(elem))
+		}
+		return out
+	default:
+		return v
+	}
+}
+
 // flattenMap recursively flattens a nested map into dot-separated key paths.
-// Calls fn(key, value) for each leaf value.
+// Calls fn(key, value) for each leaf value. Slices are serialized to JSON
+// for stable, order-independent comparison.
 func flattenMap(m map[string]any, prefix string, fn func(key, val string)) {
 	for k, v := range m {
 		fullKey := k
 		if prefix != "" {
 			fullKey = prefix + "." + k
 		}
-		if nested, ok := v.(map[string]any); ok {
-			flattenMap(nested, fullKey, fn)
-		} else {
+		switch val := v.(type) {
+		case map[string]any:
+			flattenMap(val, fullKey, fn)
+		case []any:
+			b, err := json.Marshal(val)
+			if err != nil {
+				fn(fullKey, fmt.Sprint(val))
+			} else {
+				fn(fullKey, string(b))
+			}
+		default:
 			fn(fullKey, fmt.Sprint(v))
 		}
 	}
 }
 
 // getNestedValue retrieves a value from a nested map using a dot-separated key.
+// Slices are JSON-serialized to match flattenMap's output format.
 func getNestedValue(m map[string]any, key string) string {
 	parts := strings.Split(key, ".")
 	current := m
@@ -808,6 +968,13 @@ func getNestedValue(m map[string]any, key string) string {
 			return ""
 		}
 		if i == len(parts)-1 {
+			if slice, ok := v.([]any); ok {
+				b, err := json.Marshal(slice)
+				if err != nil {
+					return fmt.Sprint(v)
+				}
+				return string(b)
+			}
 			return fmt.Sprint(v)
 		}
 		if next, ok := v.(map[string]any); ok {

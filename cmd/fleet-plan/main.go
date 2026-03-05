@@ -28,14 +28,18 @@ var (
 
 // Flags.
 var (
-	flagURL     string
-	flagToken   string
-	flagRepo    string
-	flagFormat  string
-	flagNoColor bool
-	flagVerbose bool
-	flagTeam    string
-	flagDefault string
+	flagURL              string
+	flagToken            string
+	flagRepo             string
+	flagFormat           string
+	flagNoColor          bool
+	flagVerbose          bool
+	flagTeams            []string
+	flagDefault          string
+	flagCIHeader         string
+	flagCIMarker         string
+	flagDetailedExitCode bool
+	flagChangedFiles     []string
 )
 
 // buildRootCmd constructs the root cobra.Command with all subcommands and flags.
@@ -58,8 +62,12 @@ Strictly read-only -- GET requests only.`,
 	pf.StringVarP(&flagFormat, "format", "f", "terminal", "output format: terminal, json, markdown")
 	pf.BoolVar(&flagNoColor, "no-color", false, "disable color output")
 	pf.BoolVarP(&flagVerbose, "verbose", "v", false, "show full old/new values for modified fields")
-	pf.StringVar(&flagTeam, "team", "", "diff only this team (default: all)")
+	pf.StringSliceVar(&flagTeams, "team", nil, "diff only these teams (repeatable, default: all)")
 	pf.StringVar(&flagDefault, "default", "", "path to default.yml (overrides auto-detection)")
+	pf.StringVar(&flagCIHeader, "ci-header", "", "blockquote header prepended to markdown output (CI use)")
+	pf.StringVar(&flagCIMarker, "ci-marker", "", "HTML comment marker appended to markdown output for idempotent MR note updates")
+	pf.BoolVar(&flagDetailedExitCode, "detailed-exitcode", false, "exit 2 when changes detected (0=no changes, 1=error, 2=changes)")
+	pf.StringSliceVar(&flagChangedFiles, "changed-file", nil, "only show diffs for resources from these source files (repeatable, CI use)")
 
 	root.AddCommand(versionCmd())
 
@@ -74,20 +82,22 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	if info, err := os.Stat(flagRepo); err != nil {
+	info, err := os.Stat(flagRepo)
+	if err != nil {
 		return fmt.Errorf("repo path %q does not exist: %w", flagRepo, err)
-	} else if !info.IsDir() {
+	}
+	if !info.IsDir() {
 		return fmt.Errorf("repo path %q is not a directory", flagRepo)
 	}
 
-	repo, err := parser.ParseRepo(flagRepo, flagTeam, flagDefault)
+	repo, err := parser.ParseRepo(flagRepo, flagTeams, flagDefault)
 	if err != nil {
 		return fmt.Errorf("parsing repo: %w", err)
 	}
 
 	if len(repo.Teams) == 0 && len(repo.Errors) == 0 {
-		if flagTeam != "" {
-			return fmt.Errorf("no team matching %q found in %s/teams/", flagTeam, flagRepo)
+		if len(flagTeams) > 0 {
+			return fmt.Errorf("no teams matching %v found in %s/teams/", flagTeams, flagRepo)
 		}
 		return fmt.Errorf("no teams found in %s/teams/\nAre you in a fleet-gitops repo? Try --repo /path/to/repo", flagRepo)
 	}
@@ -106,8 +116,10 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	results := diff.Diff(state, repo, flagTeam)
+	results := diff.Diff(state, repo, flagTeams, flagChangedFiles)
 	elapsed := time.Since(start)
+
+	hasChanges := output.HasChanges(results)
 
 	switch flagFormat {
 	case "json":
@@ -117,12 +129,20 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 		}
 		fmt.Println(out)
 	case "markdown":
-		fmt.Println(output.RenderDiffMarkdown(results))
+		opts := output.MarkdownOptions{
+			Header: flagCIHeader,
+			Marker: flagCIMarker,
+		}
+		fmt.Println(output.RenderDiffMarkdown(results, opts))
 	default:
 		fmt.Println(output.RenderDiffTerminal(results, flagVerbose))
 	}
 
 	fmt.Fprintf(os.Stderr, "Completed in %s\n", elapsed.Round(time.Millisecond))
+
+	if flagDetailedExitCode && hasChanges {
+		os.Exit(2)
+	}
 
 	return nil
 }

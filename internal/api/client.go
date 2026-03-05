@@ -91,6 +91,16 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("HTTP %d from %s: %s", e.StatusCode, e.URL, e.Body)
 }
 
+// isPermissionError returns true if err is an HTTP 403 or 404, which indicates
+// the API token lacks access to this endpoint (e.g. gitops role restrictions).
+func isPermissionError(err error) bool {
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	return httpErr.StatusCode == http.StatusForbidden || httpErr.StatusCode == http.StatusNotFound
+}
+
 // ---------- Response types ----------
 
 // FleetState holds the complete current state fetched from the Fleet API.
@@ -99,7 +109,7 @@ type FleetState struct {
 	Labels                 []Label
 	FleetMaintainedCatalog []FleetMaintainedApp
 	Config                 map[string]any // from GET /api/v1/fleet/config
-	GlobalPolicies         []Policy       // from GET /api/v1/fleet/policies (teamID=0)
+	GlobalPolicies         []Policy       // from GET /api/v1/fleet/global/policies (teamID=0)
 	GlobalQueries          []Query        // from GET /api/v1/fleet/queries (teamID=0)
 }
 
@@ -107,13 +117,15 @@ type FleetState struct {
 // Policies/queries/profiles are fetched via separate endpoints.
 // Managed software definitions come directly from /teams[].software.
 type Team struct {
-	ID             uint         `json:"id"`
-	Name           string       `json:"name"`
-	Software       TeamSoftware `json:"software"`
-	Policies       []Policy
-	Queries        []Query
-	Profiles       []Profile // populated by GetProfiles
-	SoftwareTitles []SoftwareTitle
+	ID                    uint         `json:"id"`
+	Name                  string       `json:"name"`
+	Software              TeamSoftware `json:"software"`
+	Policies              []Policy
+	Queries               []Query
+	Profiles              []Profile // populated by GetProfiles
+	SoftwareTitles        []SoftwareTitle
+	SoftwareUnavailable   bool // true when GetSoftware returned 403/404 (token lacks permission)
+	ProfilesUnavailable   bool // true when GetProfiles returned 403/404 (token lacks permission)
 }
 
 // TeamSoftware mirrors /api/v1/fleet/teams[].software for managed software
@@ -263,40 +275,86 @@ func (c *Client) GetConfig(ctx context.Context) (map[string]any, error) {
 	return result, nil
 }
 
-// GetTeams fetches all teams.
+// GetTeams fetches all teams with pagination.
 func (c *Client) GetTeams(ctx context.Context) ([]Team, error) {
-	var resp teamsResponse
-	q := url.Values{"per_page": {"250"}}
-	if err := c.get(ctx, "/api/v1/fleet/teams", q, &resp); err != nil {
-		return nil, fmt.Errorf("fetching teams: %w", err)
+	var all []Team
+	page := 0
+	for {
+		q := url.Values{
+			"per_page": {"250"},
+			"page":     {strconv.Itoa(page)},
+		}
+		var resp teamsResponse
+		if err := c.get(ctx, "/api/v1/fleet/teams", q, &resp); err != nil {
+			return nil, fmt.Errorf("fetching teams: %w", err)
+		}
+		all = append(all, resp.Teams...)
+		if len(resp.Teams) < 250 {
+			break
+		}
+		page++
+		if page > 100 { // safety: max 25k teams
+			break
+		}
 	}
-	return resp.Teams, nil
+	return all, nil
 }
 
-// GetPolicies fetches policies for a team (0 = global).
+// GetPolicies fetches policies for a team (0 = global) with pagination.
 func (c *Client) GetPolicies(ctx context.Context, teamID uint) ([]Policy, error) {
-	path := "/api/v1/fleet/policies"
+	apiPath := "/api/v1/fleet/global/policies"
 	if teamID > 0 {
-		path = fmt.Sprintf("/api/v1/fleet/teams/%d/policies", teamID)
+		apiPath = fmt.Sprintf("/api/v1/fleet/teams/%d/policies", teamID)
 	}
-	var resp policiesResponse
-	if err := c.get(ctx, path, nil, &resp); err != nil {
-		return nil, fmt.Errorf("fetching policies (team %d): %w", teamID, err)
+	var all []Policy
+	page := 0
+	for {
+		q := url.Values{
+			"per_page": {"250"},
+			"page":     {strconv.Itoa(page)},
+		}
+		var resp policiesResponse
+		if err := c.get(ctx, apiPath, q, &resp); err != nil {
+			return nil, fmt.Errorf("fetching policies (team %d): %w", teamID, err)
+		}
+		all = append(all, resp.Policies...)
+		if len(resp.Policies) < 250 {
+			break
+		}
+		page++
+		if page > 100 { // safety: max 25k policies
+			break
+		}
 	}
-	return resp.Policies, nil
+	return all, nil
 }
 
-// GetQueries fetches queries, optionally filtered by team.
+// GetQueries fetches queries, optionally filtered by team, with pagination.
 func (c *Client) GetQueries(ctx context.Context, teamID uint) ([]Query, error) {
-	q := url.Values{"per_page": {"250"}}
-	if teamID > 0 {
-		q.Set("team_id", strconv.FormatUint(uint64(teamID), 10))
+	var all []Query
+	page := 0
+	for {
+		q := url.Values{
+			"per_page": {"250"},
+			"page":     {strconv.Itoa(page)},
+		}
+		if teamID > 0 {
+			q.Set("team_id", strconv.FormatUint(uint64(teamID), 10))
+		}
+		var resp queriesResponse
+		if err := c.get(ctx, "/api/v1/fleet/queries", q, &resp); err != nil {
+			return nil, fmt.Errorf("fetching queries (team %d): %w", teamID, err)
+		}
+		all = append(all, resp.Queries...)
+		if len(resp.Queries) < 250 {
+			break
+		}
+		page++
+		if page > 100 { // safety: max 25k queries
+			break
+		}
 	}
-	var resp queriesResponse
-	if err := c.get(ctx, "/api/v1/fleet/queries", q, &resp); err != nil {
-		return nil, fmt.Errorf("fetching queries (team %d): %w", teamID, err)
-	}
-	return resp.Queries, nil
+	return all, nil
 }
 
 // GetSoftware fetches managed (available_for_install) software titles for a team.
@@ -356,14 +414,30 @@ func (c *Client) GetFleetMaintainedApps(ctx context.Context) ([]FleetMaintainedA
 	return all, nil
 }
 
-// GetLabels fetches all labels.
+// GetLabels fetches all labels with pagination.
 func (c *Client) GetLabels(ctx context.Context) ([]Label, error) {
-	var resp labelsResponse
-	q := url.Values{"per_page": {"250"}}
-	if err := c.get(ctx, "/api/v1/fleet/labels", q, &resp); err != nil {
-		return nil, fmt.Errorf("fetching labels: %w", err)
+	var all []Label
+	page := 0
+	for {
+		q := url.Values{
+			"per_page":            {"250"},
+			"page":                {strconv.Itoa(page)},
+			"include_host_counts": {"true"},
+		}
+		var resp labelsResponse
+		if err := c.get(ctx, "/api/v1/fleet/labels", q, &resp); err != nil {
+			return nil, fmt.Errorf("fetching labels: %w", err)
+		}
+		all = append(all, resp.Labels...)
+		if len(resp.Labels) < 250 {
+			break
+		}
+		page++
+		if page > 100 { // safety: max 25k labels
+			break
+		}
 	}
-	return resp.Labels, nil
+	return all, nil
 }
 
 // GetProfiles fetches MDM profiles for a team.
@@ -373,7 +447,7 @@ func (c *Client) GetProfiles(ctx context.Context, teamID uint) ([]Profile, error
 		q.Set("team_id", strconv.FormatUint(uint64(teamID), 10))
 	}
 	var resp profilesResponse
-	if err := c.get(ctx, "/api/v1/fleet/mdm/profiles", q, &resp); err != nil {
+	if err := c.get(ctx, "/api/v1/fleet/configuration_profiles", q, &resp); err != nil {
 		return nil, fmt.Errorf("fetching profiles (team %d): %w", teamID, err)
 	}
 	return resp.Profiles, nil
@@ -399,12 +473,9 @@ func (c *Client) FetchAll(ctx context.Context, fetchGlobal ...bool) (*FleetState
 
 	fleetMaintainedCatalog, err := c.GetFleetMaintainedApps(ctx)
 	if err != nil {
-		var httpErr *HTTPError
-		if !errors.As(err, &httpErr) ||
-			(httpErr.StatusCode != http.StatusNotFound && httpErr.StatusCode != http.StatusForbidden) {
+		if !isPermissionError(err) {
 			return nil, err
 		}
-		// Older Fleet versions (or restricted roles) may not expose this endpoint.
 		fleetMaintainedCatalog = nil
 	}
 	state.FleetMaintainedCatalog = fleetMaintainedCatalog
@@ -468,7 +539,11 @@ func (c *Client) FetchAll(ctx context.Context, fetchGlobal ...bool) (*FleetState
 		g.Go(func() error {
 			profiles, err := c.GetProfiles(gctx, teamID)
 			if err != nil {
-				return err
+				if !isPermissionError(err) {
+					return err
+				}
+				teamResults[idx].ProfilesUnavailable = true
+				profiles = nil
 			}
 			teamResults[idx].Profiles = profiles
 			return nil
@@ -477,7 +552,11 @@ func (c *Client) FetchAll(ctx context.Context, fetchGlobal ...bool) (*FleetState
 		g.Go(func() error {
 			softwareTitles, err := c.GetSoftware(gctx, teamID)
 			if err != nil {
-				return err
+				if !isPermissionError(err) {
+					return err
+				}
+				teamResults[idx].SoftwareUnavailable = true
+				softwareTitles = nil
 			}
 			teamResults[idx].SoftwareTitles = softwareTitles
 			return nil

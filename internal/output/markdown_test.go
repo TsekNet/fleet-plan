@@ -7,20 +7,40 @@ import (
 	"github.com/TsekNet/fleet-plan/internal/diff"
 )
 
+func assertOutputContains(t *testing.T, out string, substrings []string) {
+	t.Helper()
+	for _, s := range substrings {
+		if !strings.Contains(out, s) {
+			t.Errorf("expected %q in output, got:\n%s", s, out)
+		}
+	}
+}
+
+func assertOutputExcludes(t *testing.T, out string, substrings []string) {
+	t.Helper()
+	for _, s := range substrings {
+		if strings.Contains(out, s) {
+			t.Errorf("did not expect %q in output, got:\n%s", s, out)
+		}
+	}
+}
+
 func TestRenderDiffMarkdown(t *testing.T) {
 	tests := []struct {
 		name     string
 		results  []diff.DiffResult
+		opts     MarkdownOptions
 		wantAll  []string
 		wantNone []string
 	}{
 		{
-			name:    "empty results",
-			results: nil,
-			wantAll: []string{"## fleet-plan", "0 added, 0 modified, 0 deleted"},
+			name:     "empty results shows no changes",
+			results:  nil,
+			wantAll:  []string{"## fleet-plan", "No changes detected"},
+			wantNone: []string{"Change | Team"},
 		},
 		{
-			name: "added policy",
+			name: "added policy in table",
 			results: []diff.DiffResult{{
 				Team: "Workstations",
 				Policies: diff.ResourceDiff{
@@ -28,11 +48,11 @@ func TestRenderDiffMarkdown(t *testing.T) {
 				},
 			}},
 			wantAll: []string{
-				"### Workstations",
-				"**Policies:**",
-				"`[macOS] FileVault`",
-				"1 added",
+				"| Change | Team | Type | Resource | Details |",
+				"| ADDED | Workstations | Policy | **[macOS] FileVault** |",
+				"**1 added**",
 			},
+			wantNone: []string{"### Workstations", "**Policies:**"},
 		},
 		{
 			name: "added with host count",
@@ -45,7 +65,7 @@ func TestRenderDiffMarkdown(t *testing.T) {
 			wantAll: []string{"~50 hosts"},
 		},
 		{
-			name: "modified query with fields",
+			name: "modified query with fields uses table and arrow",
 			results: []diff.DiffResult{{
 				Team: "Endpoints",
 				Queries: diff.ResourceDiff{
@@ -56,47 +76,85 @@ func TestRenderDiffMarkdown(t *testing.T) {
 				},
 			}},
 			wantAll: []string{
-				"`Disk Usage`",
+				"| MODIFIED | Endpoints | Query | **Disk Usage** |",
 				"`interval`",
-				"`3600`",
-				"`7200`",
+				"`3600` → `7200`",
+				"**1 modified**",
 			},
+			wantNone: []string{"### Endpoints", "**Queries:**"},
+		},
+		{
+			name: "multiple fields joined with br",
+			results: []diff.DiffResult{{
+				Team: "T",
+				Policies: diff.ResourceDiff{
+					Modified: []diff.ResourceChange{{
+						Name: "P",
+						Fields: map[string]diff.FieldDiff{
+							"critical":    {Old: "false", New: "true"},
+							"description": {Old: "old desc", New: "new desc"},
+						},
+					}},
+				},
+			}},
+			wantAll:  []string{"<br>"},
+			wantNone: []string{", `description`"},
 		},
 		{
 			name: "deleted with warning",
 			results: []diff.DiffResult{{
-				Team: "Mobile",
+				Team: "Workstations",
 				Software: diff.ResourceDiff{
 					Deleted: []diff.ResourceChange{{Name: "OldApp", Warning: "in use by 10 hosts"}},
 				},
 			}},
-			wantAll: []string{"`OldApp`", "in use by 10 hosts"},
+			wantAll: []string{
+				"| REMOVED | Workstations | Software | **OldApp** |",
+				"⚠️ in use by 10 hosts",
+				"**1 deleted**",
+			},
 		},
 		{
-			name: "errors rendered",
+			name: "errors rendered in table",
 			results: []diff.DiffResult{{
 				Team:   "BadTeam",
 				Errors: []string{"parse error in team YAML"},
 			}},
-			wantAll: []string{"parse error in team YAML"},
+			wantAll:  []string{"⚠️", "BadTeam", "parse error in team YAML"},
+			wantNone: []string{"**WARNING**"},
 		},
 		{
-			name: "labels section",
+			name: "labels as separate table with host counts",
 			results: []diff.DiffResult{{
 				Team: "Workstations",
+				Policies: diff.ResourceDiff{
+					Added: []diff.ResourceChange{{Name: "P"}},
+				},
 				Labels: diff.LabelValidation{
 					Valid:   []diff.LabelRef{{Name: "x86-64", HostCount: 100}},
 					Missing: []diff.LabelRef{{Name: "Ghost Label", ReferencedBy: "policy: Test"}},
 				},
 			}},
 			wantAll: []string{
-				"### Labels",
-				"`x86-64`",
-				"100 hosts",
-				"`Ghost Label`",
-				"NOT FOUND",
+				"| Affected Labels | Hosts |",
+				"| `x86-64` | 100 |",
+				"`Ghost Label` **NOT FOUND**",
 			},
-			wantNone: []string{"unique labels"},
+			wantNone: []string{"### Labels", "🏷️", "🚫"},
+		},
+		{
+			name: "labels without host counts omit Hosts column",
+			results: []diff.DiffResult{{
+				Team: "T",
+				Policies: diff.ResourceDiff{
+					Added: []diff.ResourceChange{{Name: "P"}},
+				},
+				Labels: diff.LabelValidation{
+					Valid: []diff.LabelRef{{Name: "label-a"}, {Name: "label-b"}},
+				},
+			}},
+			wantAll:  []string{"| Affected Labels |", "| `label-a` |", "| `label-b` |"},
+			wantNone: []string{"Hosts"},
 		},
 		{
 			name: "multiple teams aggregated summary",
@@ -110,10 +168,14 @@ func TestRenderDiffMarkdown(t *testing.T) {
 					Queries: diff.ResourceDiff{Deleted: []diff.ResourceChange{{Name: "Q1"}}},
 				},
 			},
-			wantAll: []string{"2 added", "1 deleted"},
+			wantAll: []string{
+				"| ADDED | TeamA |",
+				"| REMOVED | TeamB |",
+				"**2 added, 1 deleted**",
+			},
 		},
 		{
-			name: "all resource types",
+			name: "all resource types in single table",
 			results: []diff.DiffResult{{
 				Team:     "Full",
 				Policies: diff.ResourceDiff{Added: []diff.ResourceChange{{Name: "P"}}},
@@ -122,23 +184,196 @@ func TestRenderDiffMarkdown(t *testing.T) {
 				Profiles: diff.ResourceDiff{Added: []diff.ResourceChange{{Name: "Prof"}}},
 			}},
 			wantAll: []string{
-				"**Policies:**", "**Queries:**", "**Software:**", "**Profiles:**",
+				"| ADDED | Full | Policy | **P** |",
+				"| MODIFIED | Full | Query | **Q** |",
+				"| REMOVED | Full | Software | **S** |",
+				"| ADDED | Full | Profile | **Prof** |",
 			},
+			wantNone: []string{"**Policies:**", "**Queries:**", "### Full"},
+		},
+		{
+			name: "config changes in table",
+			results: []diff.DiffResult{{
+				Team: "(global)",
+				Config: []diff.ConfigChange{
+					{Section: "org_settings", Key: "enable_host_users", Old: "true", New: "false"},
+					{Section: "org_settings", Key: "new_key", New: "value"},
+				},
+			}},
+			wantAll: []string{
+				"| MODIFIED | Global | Config | **org_settings.enable_host_users** |",
+				"`true` → `false`",
+				"| ADDED | Global | Config | **org_settings.new_key** |",
+			},
+		},
+		{
+			name:    "ci-header prepended",
+			results: []diff.DiffResult{{
+				Team:     "T",
+				Policies: diff.ResourceDiff{Added: []diff.ResourceChange{{Name: "P"}}},
+			}},
+			opts:    MarkdownOptions{Header: "> Comparing against **production**"},
+			wantAll: []string{"## fleet-plan", "> Comparing against **production**", "**1 added**"},
+		},
+		{
+			name:    "ci-marker appended",
+			results: []diff.DiffResult{{
+				Team:     "T",
+				Policies: diff.ResourceDiff{Added: []diff.ResourceChange{{Name: "P"}}},
+			}},
+			opts:    MarkdownOptions{Marker: "fleet-plan-marker"},
+			wantAll: []string{"<!-- fleet-plan-marker -->"},
+		},
+		{
+			name:    "ci-marker on no changes",
+			results: nil,
+			opts:    MarkdownOptions{Marker: "fleet-plan-marker"},
+			wantAll: []string{"No changes detected", "<!-- fleet-plan-marker -->"},
+		},
+		{
+			name:    "ci-header on no changes",
+			results: nil,
+			opts:    MarkdownOptions{Header: "> env info"},
+			wantAll: []string{"> env info", "No changes detected"},
+		},
+		{
+			name: "host count formatting with commas",
+			results: []diff.DiffResult{{
+				Team: "T",
+				Policies: diff.ResourceDiff{
+					Added: []diff.ResourceChange{{Name: "P"}},
+				},
+				Labels: diff.LabelValidation{
+					Valid: []diff.LabelRef{{Name: "big-label", HostCount: 26782}},
+				},
+			}},
+			wantAll: []string{"26,782"},
+		},
+		{
+			name: "long field values truncated",
+			results: []diff.DiffResult{{
+				Team: "T",
+				Queries: diff.ResourceDiff{
+					Modified: []diff.ResourceChange{{
+						Name: "Q",
+						Fields: map[string]diff.FieldDiff{
+							"query": {
+								Old: "SELECT 1 FROM programs WHERE name = 'Google Chrome' AND version_compare(version, '135.0.7049.85') >= 0;",
+								New: "SELECT 1 FROM programs WHERE name = 'Google Chrome' AND version_compare(version, '135.0.7049.95') >= 0;",
+							},
+						},
+					}},
+				},
+			}},
+			wantAll:  []string{"..."},
+			wantNone: []string{"SELECT 1 FROM programs"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out := RenderDiffMarkdown(tt.results)
-			for _, want := range tt.wantAll {
-				if !strings.Contains(out, want) {
-					t.Errorf("expected %q in output, got:\n%s", want, out)
+			out := RenderDiffMarkdown(tt.results, tt.opts)
+			assertOutputContains(t, out, tt.wantAll)
+			assertOutputExcludes(t, out, tt.wantNone)
+		})
+	}
+}
+
+func TestMdDiffContext(t *testing.T) {
+	tests := []struct {
+		name       string
+		old, new   string
+		maxLen     int
+		wantOldSub string
+		wantNewSub string
+		wantEllip  bool
+	}{
+		{
+			name: "short values unchanged",
+			old: "3600", new: "7200", maxLen: 60,
+			wantOldSub: "3600", wantNewSub: "7200",
+		},
+		{
+			name:       "long values truncated with ellipsis",
+			old:        "SELECT 1 FROM programs WHERE name = 'Google Chrome' AND version_compare(version, '135.0.7049.85') >= 0;",
+			new:        "SELECT 1 FROM programs WHERE name = 'Google Chrome' AND version_compare(version, '135.0.7049.95') >= 0;",
+			maxLen:     60,
+			wantOldSub: "...",
+			wantNewSub: "...",
+			wantEllip:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotOld, gotNew := mdDiffContext(tt.old, tt.new, tt.maxLen)
+			if !strings.Contains(gotOld, tt.wantOldSub) {
+				t.Errorf("old: expected substring %q in %q", tt.wantOldSub, gotOld)
+			}
+			if !strings.Contains(gotNew, tt.wantNewSub) {
+				t.Errorf("new: expected substring %q in %q", tt.wantNewSub, gotNew)
+			}
+			if tt.wantEllip {
+				if len(gotOld) > tt.maxLen+6 || len(gotNew) > tt.maxLen+6 {
+					t.Errorf("truncated values too long: old=%d new=%d (max %d)", len(gotOld), len(gotNew), tt.maxLen)
 				}
 			}
-			for _, notWant := range tt.wantNone {
-				if strings.Contains(out, notWant) {
-					t.Errorf("did not expect %q in output, got:\n%s", notWant, out)
-				}
+		})
+	}
+}
+
+func TestFormatHostCount(t *testing.T) {
+	tests := []struct {
+		n    uint
+		want string
+	}{
+		{0, "0"},
+		{42, "42"},
+		{999, "999"},
+		{1000, "1,000"},
+		{26782, "26,782"},
+		{1000000, "1,000,000"},
+	}
+	for _, tt := range tests {
+		if got := formatHostCount(tt.n); got != tt.want {
+			t.Errorf("formatHostCount(%d) = %q, want %q", tt.n, got, tt.want)
+		}
+	}
+}
+
+func TestHasChanges(t *testing.T) {
+	tests := []struct {
+		name    string
+		results []diff.DiffResult
+		want    bool
+	}{
+		{name: "nil", results: nil, want: false},
+		{name: "empty team", results: []diff.DiffResult{{Team: "T"}}, want: false},
+		{name: "added policy", results: []diff.DiffResult{{
+			Team:     "T",
+			Policies: diff.ResourceDiff{Added: []diff.ResourceChange{{Name: "P"}}},
+		}}, want: true},
+		{name: "config change", results: []diff.DiffResult{{
+			Team:   "(global)",
+			Config: []diff.ConfigChange{{Section: "org_settings", Key: "k", New: "v"}},
+		}}, want: true},
+		{name: "errors only", results: []diff.DiffResult{{
+			Team:   "T",
+			Errors: []string{"something"},
+		}}, want: true},
+		{name: "missing labels", results: []diff.DiffResult{{
+			Team:   "T",
+			Labels: diff.LabelValidation{Missing: []diff.LabelRef{{Name: "x"}}},
+		}}, want: true},
+		{name: "valid labels only is not a change", results: []diff.DiffResult{{
+			Team:   "T",
+			Labels: diff.LabelValidation{Valid: []diff.LabelRef{{Name: "x", HostCount: 5}}},
+		}}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := HasChanges(tt.results); got != tt.want {
+				t.Errorf("HasChanges() = %v, want %v", got, tt.want)
 			}
 		})
 	}

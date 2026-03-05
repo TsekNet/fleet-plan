@@ -22,12 +22,11 @@ import (
 //   - Queries: Uptime (interval changed → modified)
 //   - No policies (SSH Root Login is new → added)
 //
-// Mobile team: not in API → new team info message.
 // Labels: macOS 14+ and Windows 11 exist. Ubuntu 24.04 does NOT → missing label error.
 func TestDiffTestdataAgainstMockAPI(t *testing.T) {
 	root := testutil.TestdataRoot(t)
 
-	proposed, err := parser.ParseRepo(root, "", "")
+	proposed, err := parser.ParseRepo(root, nil, "")
 	if err != nil {
 		t.Fatalf("ParseRepo: %v", err)
 	}
@@ -82,12 +81,12 @@ func TestDiffTestdataAgainstMockAPI(t *testing.T) {
 	}
 
 	// --- Test all teams (unfiltered) ---
-	allResults := Diff(current, proposed, "")
+	allResults := Diff(current, proposed, nil, nil)
 
-	// Should have 4 results: (global), Workstations, Servers, Mobile
+	// Should have 3 results: (global), Workstations, Servers
 	// The (global) result comes from default.yml parsing.
-	if len(allResults) != 4 {
-		t.Fatalf("expected 4 results, got %d", len(allResults))
+	if len(allResults) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(allResults))
 	}
 
 	// Verify global result exists and is first
@@ -98,9 +97,9 @@ func TestDiffTestdataAgainstMockAPI(t *testing.T) {
 	// --- Workstations ---
 	ws := findTeam(t, allResults, "Workstations")
 
-	// Policies: Gatekeeper, Defender, SSH, Firewall are new (4 added)
-	if len(ws.Policies.Added) != 4 {
-		t.Errorf("Workstations: expected 4 added policies, got %d: %v", len(ws.Policies.Added), ws.Policies.Added)
+	// Policies: Defender, SSH, Firewall are new (3 added)
+	if len(ws.Policies.Added) != 3 {
+		t.Errorf("Workstations: expected 3 added policies, got %d: %v", len(ws.Policies.Added), ws.Policies.Added)
 	}
 	// FileVault modified (query changed)
 	if len(ws.Policies.Modified) != 1 {
@@ -184,35 +183,13 @@ func TestDiffTestdataAgainstMockAPI(t *testing.T) {
 		}
 	}
 
-	// --- Mobile (new team) ---
-	mob := findTeam(t, allResults, "Mobile")
-
-	// All resources should be "added" since team is new
-	if len(mob.Policies.Added) != 1 {
-		t.Errorf("Mobile: expected 1 added policy, got %d", len(mob.Policies.Added))
-	}
-	if len(mob.Queries.Added) != 1 {
-		t.Errorf("Mobile: expected 1 added query, got %d", len(mob.Queries.Added))
-	}
-
-	// Should have info message about new team
-	foundNewTeamInfo := false
-	for _, e := range mob.Errors {
-		if strings.Contains(e, "does not exist in Fleet yet") {
-			foundNewTeamInfo = true
-			break
-		}
-	}
-	if !foundNewTeamInfo {
-		t.Error("expected info message about new team for Mobile")
-	}
 }
 
 // TestDiffTestdataWorkstationsOnly verifies filtered diff for a single team.
 func TestDiffTestdataWorkstationsOnly(t *testing.T) {
 	root := testutil.TestdataRoot(t)
 
-	proposed, err := parser.ParseRepo(root, "", "")
+	proposed, err := parser.ParseRepo(root, nil, "")
 	if err != nil {
 		t.Fatalf("ParseRepo: %v", err)
 	}
@@ -232,7 +209,7 @@ func TestDiffTestdataWorkstationsOnly(t *testing.T) {
 		},
 	}
 
-	results := Diff(current, proposed, "Workstations")
+	results := Diff(current, proposed, []string{"Workstations"}, nil)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -284,7 +261,7 @@ func TestDiffPolicyScenarios(t *testing.T) {
 			current := &api.FleetState{Teams: []api.Team{{ID: 1, Name: "T", Policies: tt.current}}}
 			proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{Name: "T", Policies: tt.proposed}}}
 
-			results := Diff(current, proposed, "")
+			results := Diff(current, proposed, nil, nil)
 			r := results[0]
 
 			if len(r.Policies.Added) != tt.wantAdded {
@@ -328,7 +305,7 @@ func TestDiffNewTeam(t *testing.T) {
 		Teams: []parser.ParsedTeam{{Name: "New Team", Policies: []parser.ParsedPolicy{{Name: "Test Policy"}}}},
 	}
 
-	results := Diff(current, proposed, "")
+	results := Diff(current, proposed, nil, nil)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -366,7 +343,7 @@ func TestDiffTeamFilter(t *testing.T) {
 		},
 	}
 
-	results := Diff(current, proposed, "Alpha")
+	results := Diff(current, proposed, []string{"Alpha"}, nil)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result with filter, got %d", len(results))
 	}
@@ -419,7 +396,7 @@ func TestDiffLabelValidation(t *testing.T) {
 				}},
 			}
 
-			results := Diff(current, proposed, "")
+			results := Diff(current, proposed, nil, nil)
 			r := results[0]
 
 			if len(r.Labels.Valid) != tt.wantValid {
@@ -455,7 +432,7 @@ func TestDiffLabelValidationSkipsUnchangedPolicies(t *testing.T) {
 		}},
 	}
 
-	results := Diff(current, proposed, "")
+	results := Diff(current, proposed, nil, nil)
 	r := results[0]
 
 	if len(r.Labels.Valid) != 0 {
@@ -497,7 +474,7 @@ func TestDiffQueryChanges(t *testing.T) {
 			current := &api.FleetState{Teams: []api.Team{{ID: 1, Name: "T", Queries: tt.current}}}
 			proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{Name: "T", Queries: tt.proposed}}}
 
-			results := Diff(current, proposed, "")
+			results := Diff(current, proposed, nil, nil)
 			r := results[0]
 
 			if len(r.Queries.Added) != tt.wantAdded {
@@ -571,7 +548,7 @@ func TestDiffSoftwarePackageAddedDeleted(t *testing.T) {
 		},
 	}
 
-	results := Diff(current, proposed, "")
+	results := Diff(current, proposed, nil, nil)
 	r := results[0]
 
 	if len(r.Software.Added) != 1 {
@@ -626,7 +603,7 @@ func TestDiffSoftwarePackageModified(t *testing.T) {
 		},
 	}
 
-	results := Diff(current, proposed, "")
+	results := Diff(current, proposed, nil, nil)
 	r := results[0]
 
 	if len(r.Software.Modified) != 1 {
@@ -685,7 +662,7 @@ func TestDiffSoftwareFleetAndAppStore(t *testing.T) {
 		},
 	}
 
-	results := Diff(current, proposed, "")
+	results := Diff(current, proposed, nil, nil)
 	r := results[0]
 
 	// Expect at least one add/delete/modify across fleet + app store
@@ -731,7 +708,7 @@ func TestDiffFleetMaintainedAppsNullAPIShowsAdded(t *testing.T) {
 		},
 	}
 
-	results := Diff(current, proposed, "")
+	results := Diff(current, proposed, nil, nil)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -810,7 +787,7 @@ func TestDiffFleetMaintainedAppsInferenceFromTitles(t *testing.T) {
 		},
 	}
 
-	results := Diff(current, proposed, "")
+	results := Diff(current, proposed, nil, nil)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -899,12 +876,12 @@ func TestDiffGlobalConfig(t *testing.T) {
 		wantOld, wantNew string
 	}{
 		{
-			name:      "new key added",
+			name:      "key absent from API is skipped",
 			apiConfig: map[string]any{"org_info": map[string]any{"org_name": "Acme Corp"}},
 			proposedOrg: map[string]any{"org_info": map[string]any{
 				"org_name": "Acme Corp", "org_logo_url": "https://example.com/logo.png",
 			}},
-			wantChanges: 1, wantKey: "org_info.org_logo_url", wantNew: "https://example.com/logo.png",
+			wantChanges: 0, wantKeyAbsent: "org_info.org_logo_url",
 		},
 		{
 			name:      "value modified",
@@ -938,7 +915,7 @@ func TestDiffGlobalConfig(t *testing.T) {
 				Teams:  []parser.ParsedTeam{},
 			}
 
-			results := Diff(current, proposed, "")
+			results := Diff(current, proposed, nil, nil)
 			global := findTeam(t, results, "(global)")
 
 			if len(global.Config) != tt.wantChanges {
@@ -991,7 +968,7 @@ func TestDiffGlobalPoliciesAndQueries(t *testing.T) {
 		Teams: []parser.ParsedTeam{},
 	}
 
-	results := Diff(current, proposed, "")
+	results := Diff(current, proposed, nil, nil)
 	global := findTeam(t, results, "(global)")
 
 	if len(global.Policies.Added) != 1 {
@@ -1012,7 +989,7 @@ func TestDiffGlobalSkippedWithTeamFilter(t *testing.T) {
 		Teams:  []parser.ParsedTeam{{Name: "Alpha"}},
 	}
 
-	results := Diff(current, proposed, "Alpha")
+	results := Diff(current, proposed, []string{"Alpha"}, nil)
 	for _, r := range results {
 		if r.Team == "(global)" {
 			t.Error("global result should be skipped when team filter is set")

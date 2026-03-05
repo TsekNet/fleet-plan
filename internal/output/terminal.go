@@ -396,15 +396,14 @@ func renderLabels(results []diff.DiffResult) string {
 
 	// Missing labels first (errors are more important)
 	for _, info := range missingList {
-		sb.WriteString(red.Render("  - ") + fmt.Sprintf("%q", info.name) +
-			red.Render(" (NOT FOUND)") +
-			dim.Render(fmt.Sprintf(" referenced by %s", info.referencedBy)) + "\n")
+		line := fmt.Sprintf("  - %q (NOT FOUND) referenced by %s", info.name, info.referencedBy)
+		sb.WriteString(red.Render(line) + "\n")
 	}
 
-	// All valid labels
+	// Valid labels (informational, not a change)
 	for _, info := range validList {
-		sb.WriteString(green.Render("  + ") + fmt.Sprintf("%q", info.name) +
-			dim.Render(fmt.Sprintf(" (%d hosts)", info.hostCount)) + "\n")
+		line := fmt.Sprintf("  * %q (%d hosts)", info.name, info.hostCount)
+		sb.WriteString(dim.Render(line) + "\n")
 	}
 
 	return strings.TrimRight(sb.String(), "\n")
