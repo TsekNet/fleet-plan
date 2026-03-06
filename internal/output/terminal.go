@@ -436,7 +436,8 @@ func renderSummaryBar(summary DiffSummary) string {
 
 	var sb strings.Builder
 	sb.WriteString(dim.Render(strings.Repeat("-", 80)) + "\n")
-	sb.WriteString(line)
+	sb.WriteString(line + "\n")
+	sb.WriteString(dim.Render("NOTE: Unexpected changes? Rebase onto the target branch and re-run fleet-plan."))
 
 	return sb.String()
 }
