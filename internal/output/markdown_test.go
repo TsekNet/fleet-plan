@@ -84,7 +84,7 @@ func TestRenderDiffMarkdown(t *testing.T) {
 			wantNone: []string{"### Endpoints", "**Queries:**"},
 		},
 		{
-			name: "multiple fields joined with br",
+			name: "multiple fields joined with double br",
 			results: []diff.DiffResult{{
 				Team: "T",
 				Policies: diff.ResourceDiff{
@@ -97,8 +97,22 @@ func TestRenderDiffMarkdown(t *testing.T) {
 					}},
 				},
 			}},
-			wantAll:  []string{"<br>"},
+			wantAll:  []string{"<br><br>"},
 			wantNone: []string{", `description`"},
+		},
+		{
+			name: "backticks in field values escaped",
+			results: []diff.DiffResult{{
+				Team: "T",
+				Queries: diff.ResourceDiff{
+					Modified: []diff.ResourceChange{{
+						Name:   "Q",
+						Fields: map[string]diff.FieldDiff{"query": {Old: "SELECT `col` FROM t", New: "SELECT `col` FROM t2"}},
+					}},
+				},
+			}},
+			wantAll:  []string{"`query`: `SELECT \\`col\\` FROM t` → `SELECT \\`col\\` FROM t2`"},
+			wantNone: []string{"SELECT `col`"},
 		},
 		{
 			name: "deleted with warning",

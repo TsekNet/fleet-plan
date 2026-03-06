@@ -80,10 +80,10 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 
 		for _, c := range result.Config {
 			if c.Old == "" {
-				rows = append(rows, row{"ADDED", team, "Config", c.Section + "." + c.Key, fmt.Sprintf("`%s`", c.New)})
+				rows = append(rows, row{"ADDED", team, "Config", c.Section + "." + c.Key, fmt.Sprintf("`%s`", mdEscapeBackticks(c.New))})
 				totalAdded++
 			} else {
-				rows = append(rows, row{"MODIFIED", team, "Config", c.Section + "." + c.Key, fmt.Sprintf("`%s` → `%s`", c.Old, c.New)})
+				rows = append(rows, row{"MODIFIED", team, "Config", c.Section + "." + c.Key, fmt.Sprintf("`%s` → `%s`", mdEscapeBackticks(c.Old), mdEscapeBackticks(c.New))})
 				totalModified++
 			}
 		}
@@ -159,6 +159,10 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 	return sb.String()
 }
 
+func mdEscapeBackticks(s string) string {
+	return strings.ReplaceAll(s, "`", "\\`")
+}
+
 func mdFieldDetails(fields map[string]diff.FieldDiff) string {
 	if len(fields) == 0 {
 		return ""
@@ -168,9 +172,9 @@ func mdFieldDetails(fields map[string]diff.FieldDiff) string {
 	for _, name := range names {
 		fd := fields[name]
 		old, new := mdDiffContext(fd.Old, fd.New, mdMaxFieldLen)
-		parts = append(parts, fmt.Sprintf("`%s`: `%s` → `%s`", name, old, new))
+		parts = append(parts, fmt.Sprintf("`%s`: `%s` → `%s`", mdEscapeBackticks(name), mdEscapeBackticks(old), mdEscapeBackticks(new)))
 	}
-	return strings.Join(parts, "<br>")
+	return strings.Join(parts, "<br><br>")
 }
 
 // mdDiffContext truncates long old/new values, showing context around the diff.
