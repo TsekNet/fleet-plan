@@ -6,7 +6,8 @@ before:
     - go test ./...
 
 builds:
-  - main: ./cmd/fleet-plan
+  - id: amd64
+    main: ./cmd/fleet-plan
     binary: fleet-plan
     env:
       - CGO_ENABLED=0
@@ -15,18 +16,38 @@ builds:
       - -X main.version={{.Version}}
       - -X main.buildDate={{.Date}}
       - -X main.goVersion={{.Env.GOVERSION}}
-    goos:
-      - linux
-      - darwin
-      - windows
-    goarch:
-      - amd64
-      - arm64
+    targets:
+      - linux_amd64
+      - darwin_amd64
+      - windows_amd64
+
+  - id: darwin-arm64
+    main: ./cmd/fleet-plan
+    binary: fleet-plan
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.buildDate={{.Date}}
+      - -X main.goVersion={{.Env.GOVERSION}}
+    targets:
+      - darwin_arm64
 
 archives:
-  - formats:
+  - id: amd64
+    builds:
+      - amd64
+    formats:
       - binary
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    name_template: "{{ .ProjectName }}_{{ .Os }}"
+
+  - id: darwin-arm64
+    builds:
+      - darwin-arm64
+    formats:
+      - binary
+    name_template: "{{ .ProjectName }}_{{ .Os }}_arm64"
 
 checksum:
   name_template: "checksums.txt"
