@@ -84,7 +84,7 @@ func TestRenderDiffMarkdown(t *testing.T) {
 			wantNone: []string{"### Endpoints", "**Queries:**"},
 		},
 		{
-			name: "multiple fields joined with double br",
+			name: "multiple fields joined with br",
 			results: []diff.DiffResult{{
 				Team: "T",
 				Policies: diff.ResourceDiff{
@@ -97,11 +97,11 @@ func TestRenderDiffMarkdown(t *testing.T) {
 					}},
 				},
 			}},
-			wantAll:  []string{"<br><br>"},
-			wantNone: []string{", `description`"},
+			wantAll:  []string{"<ul>", "<li>`critical`", "<li>`description`", "</ul>"},
+			wantNone: []string{"<br>"},
 		},
 		{
-			name: "backticks in field values escaped",
+			name: "backticks in field values use double backtick spans",
 			results: []diff.DiffResult{{
 				Team: "T",
 				Queries: diff.ResourceDiff{
@@ -111,8 +111,21 @@ func TestRenderDiffMarkdown(t *testing.T) {
 					}},
 				},
 			}},
-			wantAll:  []string{"`query`: `SELECT \\`col\\` FROM t` → `SELECT \\`col\\` FROM t2`"},
-			wantNone: []string{"SELECT `col`"},
+			wantAll:  []string{"`` SELECT `col` FROM t ``", "`` SELECT `col` FROM t2 ``"},
+			wantNone: []string{"\\`"},
+		},
+		{
+			name: "empty field values render as italic empty",
+			results: []diff.DiffResult{{
+				Team: "T",
+				Software: diff.ResourceDiff{
+					Modified: []diff.ResourceChange{{
+						Name:   "S",
+						Fields: map[string]diff.FieldDiff{"hash": {Old: "abc123", New: ""}},
+					}},
+				},
+			}},
+			wantAll: []string{"`hash`: `abc123` → _(empty)_"},
 		},
 		{
 			name: "deleted with warning",
