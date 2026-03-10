@@ -206,10 +206,11 @@ type SoftwareTitleAppStore struct {
 
 // SoftwareTitlePackageMeta contains package metadata for a title.
 type SoftwareTitlePackageMeta struct {
-	Name       string `json:"name"`
-	PackageURL string `json:"package_url"`
-	SelfService bool  `json:"self_service"`
-	Platform   string `json:"platform"`
+	Name                 string `json:"name"`
+	PackageURL           string `json:"package_url"`
+	SelfService          bool   `json:"self_service"`
+	Platform             string `json:"platform"`
+	FleetMaintainedAppID *uint  `json:"fleet_maintained_app_id"`
 }
 
 // Label represents a Fleet label.

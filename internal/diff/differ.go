@@ -604,7 +604,6 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp) [
 		return nil
 	}
 
-	// Track custom package URLs so we don't misclassify them as maintained apps.
 	customPackageURLs := make(map[string]bool)
 	for _, p := range team.Software.Packages {
 		u := normalizeSoftwarePath(p.URL)
@@ -613,13 +612,25 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp) [
 		}
 	}
 
+	// Index 1 (strongest): catalog app ID -> catalog entry.
+	// The API returns fleet_maintained_app_id on software titles that were
+	// installed via a fleet-maintained app; this is the most reliable join.
+	catalogByAppID := make(map[uint]api.FleetMaintainedApp)
+	// Index 2: catalog SoftwareTitleID -> catalog entry.
+	catalogByTitleID := make(map[uint]api.FleetMaintainedApp)
+	// Index 3 (weakest): lowercase name|platform -> catalog entries.
 	catalogByNamePlatform := make(map[string][]api.FleetMaintainedApp)
 	for _, app := range catalog {
-		key := fleetCatalogKey(app.Name, app.Platform)
-		if key == "" {
-			continue
+		if app.ID != 0 {
+			catalogByAppID[app.ID] = app
 		}
-		catalogByNamePlatform[key] = append(catalogByNamePlatform[key], app)
+		if app.SoftwareTitleID != 0 {
+			catalogByTitleID[app.SoftwareTitleID] = app
+		}
+		key := fleetCatalogKey(app.Name, app.Platform)
+		if key != "" {
+			catalogByNamePlatform[key] = append(catalogByNamePlatform[key], app)
+		}
 	}
 
 	inferred := make(map[string]api.TeamFleetApp)
@@ -639,6 +650,33 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp) [
 			continue
 		}
 
+		// Strategy 1: match by fleet_maintained_app_id (exact, from API).
+		if title.SoftwarePackage.FleetMaintainedAppID != nil {
+			if app, ok := catalogByAppID[*title.SoftwarePackage.FleetMaintainedAppID]; ok {
+				slug := normalizeSoftwarePath(app.Slug)
+				if slug != "" {
+					inferred[slug] = api.TeamFleetApp{
+						Slug:        slug,
+						SelfService: title.SoftwarePackage.SelfService,
+					}
+					continue
+				}
+			}
+		}
+
+		// Strategy 2: match by SoftwareTitleID -> catalog SoftwareTitleID.
+		if app, ok := catalogByTitleID[title.ID]; ok {
+			slug := normalizeSoftwarePath(app.Slug)
+			if slug != "" {
+				inferred[slug] = api.TeamFleetApp{
+					Slug:        slug,
+					SelfService: title.SoftwarePackage.SelfService,
+				}
+				continue
+			}
+		}
+
+		// Strategy 3: match by name|platform (requires exactly 1 match).
 		key := fleetCatalogKey(title.Name, title.SoftwarePackage.Platform)
 		matches := catalogByNamePlatform[key]
 		if len(matches) != 1 {

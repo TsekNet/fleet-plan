@@ -812,6 +812,69 @@ func TestDiffFleetMaintainedAppsInferenceFromTitles(t *testing.T) {
 	}
 }
 
+func TestDiffFleetMaintainedAppsInferenceByAppID(t *testing.T) {
+	fmaID := uint(42)
+	current := &api.FleetState{
+		FleetMaintainedCatalog: []api.FleetMaintainedApp{
+			{
+				ID:       fmaID,
+				Slug:     "7-zip/windows",
+				Name:     "7-Zip",
+				Platform: "windows",
+			},
+		},
+		Teams: []api.Team{
+			{
+				ID:   1,
+				Name: "Workstations",
+				Software: api.TeamSoftware{
+					FleetMaintained: nil,
+				},
+				SoftwareTitles: []api.SoftwareTitle{
+					{
+						ID:     99,
+						Name:   "7-Zip (x64)",
+						Source: "apps",
+						SoftwarePackage: &api.SoftwareTitlePackageMeta{
+							PackageURL:           "https://fleet-maintained.example/7-zip.msi",
+							Platform:             "windows",
+							SelfService:          true,
+							FleetMaintainedAppID: &fmaID,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{
+			{
+				Name: "Workstations",
+				Software: parser.ParsedSoftware{
+					FleetMaintained: []parser.ParsedFleetApp{
+						{Slug: "7-zip/windows", SelfService: true},
+					},
+				},
+			},
+		},
+	}
+
+	results := Diff(current, proposed, nil, nil)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+
+	if len(r.Software.Added) != 0 {
+		t.Errorf("expected 0 added fleet apps (inferred via fleet_maintained_app_id), got %d: %v",
+			len(r.Software.Added), r.Software.Added)
+	}
+	if len(r.Software.Modified) != 0 {
+		t.Errorf("expected 0 modified fleet apps, got %d", len(r.Software.Modified))
+	}
+}
+
 // TestDiffProfilesMatchByContentName verifies that profiles are matched by
 // the name extracted from file content (e.g., PayloadDisplayName), not by
 // filename. This is the exact bug that caused false add/delete diffs when
