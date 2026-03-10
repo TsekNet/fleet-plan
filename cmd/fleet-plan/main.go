@@ -31,8 +31,6 @@ var (
 	flagURL              string
 	flagToken            string
 	flagRepo             string
-	flagBaseRepo         string
-	flagBaseDefault      string
 	flagFormat           string
 	flagNoColor          bool
 	flagVerbose          bool
@@ -66,8 +64,6 @@ Strictly read-only -- GET requests only.`,
 	pf.BoolVarP(&flagVerbose, "verbose", "v", false, "show full old/new values for modified fields")
 	pf.StringSliceVar(&flagTeams, "team", nil, "diff only these teams (repeatable, default: all)")
 	pf.StringVar(&flagDefault, "default", "", "path to default.yml (overrides auto-detection)")
-	pf.StringVar(&flagBaseRepo, "base-repo", "", "path to base branch checkout for YAML-to-YAML diff (skips API)")
-	pf.StringVar(&flagBaseDefault, "base-default", "", "path to base branch default.yml (used with --base-repo)")
 	pf.StringVar(&flagCIHeader, "ci-header", "", "blockquote header prepended to markdown output (CI use)")
 	pf.StringVar(&flagCIMarker, "ci-marker", "", "HTML comment marker appended to markdown output for idempotent MR note updates")
 	pf.BoolVar(&flagDetailedExitCode, "detailed-exitcode", false, "exit 2 when changes detected (0=no changes, 1=error, 2=changes)")
@@ -80,6 +76,11 @@ Strictly read-only -- GET requests only.`,
 
 func runDiff(cmd *cobra.Command, _ []string) error {
 	start := time.Now()
+
+	auth, err := config.ResolveAuth(flagURL, flagToken, flagRepo)
+	if err != nil {
+		return err
+	}
 
 	info, err := os.Stat(flagRepo)
 	if err != nil {
@@ -101,42 +102,18 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("no teams found in %s/teams/\nAre you in a fleet-gitops repo? Try --repo /path/to/repo", flagRepo)
 	}
 
-	var state *api.FleetState
+	client, err := api.NewClient(auth.URL, auth.Token)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
 
-	if flagBaseRepo != "" {
-		baseInfo, err := os.Stat(flagBaseRepo)
-		if err != nil {
-			return fmt.Errorf("base-repo path %q does not exist: %w", flagBaseRepo, err)
-		}
-		if !baseInfo.IsDir() {
-			return fmt.Errorf("base-repo path %q is not a directory", flagBaseRepo)
-		}
+	fmt.Fprintf(os.Stderr, "Fetching Fleet state from %s...\n", auth.URL)
 
-		fmt.Fprintf(os.Stderr, "Diffing against base branch at %s...\n", flagBaseRepo)
-		baseRepo, err := parser.ParseRepo(flagBaseRepo, flagTeams, flagBaseDefault)
-		if err != nil {
-			return fmt.Errorf("parsing base repo: %w", err)
-		}
-		state = diff.ParsedRepoToFleetState(baseRepo)
-	} else {
-		auth, err := config.ResolveAuth(flagURL, flagToken, flagRepo)
-		if err != nil {
-			return err
-		}
-
-		client, err := api.NewClient(auth.URL, auth.Token)
-		if err != nil {
-			return err
-		}
-		ctx := context.Background()
-
-		fmt.Fprintf(os.Stderr, "Fetching Fleet state from %s...\n", auth.URL)
-
-		fetchGlobal := repo.Global != nil
-		state, err = client.FetchAll(ctx, fetchGlobal)
-		if err != nil {
-			return err
-		}
+	fetchGlobal := repo.Global != nil
+	state, err := client.FetchAll(ctx, fetchGlobal)
+	if err != nil {
+		return err
 	}
 
 	results := diff.Diff(state, repo, flagTeams, flagChangedFiles)
