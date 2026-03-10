@@ -635,9 +635,6 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp) [
 
 	inferred := make(map[string]api.TeamFleetApp)
 	for _, title := range team.SoftwareTitles {
-		if !strings.EqualFold(strings.TrimSpace(title.Source), "apps") {
-			continue
-		}
 		if title.AppStoreApp != nil {
 			continue
 		}
@@ -651,6 +648,9 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp) [
 		}
 
 		// Strategy 1: match by fleet_maintained_app_id (exact, from API).
+		// This works across all platforms (macOS source="apps", Windows
+		// source="programs"/"ps1_packages") so we check it before any
+		// source-based filtering.
 		if title.SoftwarePackage.FleetMaintainedAppID != nil {
 			if app, ok := catalogByAppID[*title.SoftwarePackage.FleetMaintainedAppID]; ok {
 				slug := normalizeSoftwarePath(app.Slug)
@@ -662,6 +662,13 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp) [
 					continue
 				}
 			}
+		}
+
+		// Strategies 2 and 3 rely on heuristics that only work reliably for
+		// macOS "apps" source titles. Skip other sources to avoid false matches
+		// against custom packages (source="programs", "deb_packages", etc.).
+		if !strings.EqualFold(strings.TrimSpace(title.Source), "apps") {
+			continue
 		}
 
 		// Strategy 2: match by SoftwareTitleID -> catalog SoftwareTitleID.

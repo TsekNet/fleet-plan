@@ -834,7 +834,7 @@ func TestDiffFleetMaintainedAppsInferenceByAppID(t *testing.T) {
 					{
 						ID:     99,
 						Name:   "7-Zip (x64)",
-						Source: "apps",
+						Source: "programs", // Windows MSI/EXE source, NOT "apps"
 						SoftwarePackage: &api.SoftwareTitlePackageMeta{
 							PackageURL:           "https://fleet-maintained.example/7-zip.msi",
 							Platform:             "windows",
