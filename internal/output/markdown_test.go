@@ -277,6 +277,24 @@ func TestRenderDiffMarkdown(t *testing.T) {
 			wantAll: []string{"26,782"},
 		},
 		{
+			name: "pipes and newlines escaped in table cells",
+			results: []diff.DiffResult{{
+				Team: "T",
+				Software: diff.ResourceDiff{
+					Modified: []diff.ResourceChange{{
+						Name: "fleet app cursor/windows",
+						Fields: map[string]diff.FieldDiff{
+							"install_script": {
+								Old: "$exit_code = Invoke-Binary $env:INSTALLER_PATH\nexit $exit_code",
+								New: "try { $result = Invoke-AsLoggedInUser | Out-Null }\nexit 0",
+							},
+						},
+					}},
+				},
+			}},
+			wantAll: []string{`\|`, "Invoke-AsLoggedInUser"},
+		},
+		{
 			name: "long field values truncated",
 			results: []diff.DiffResult{{
 				Team: "T",
