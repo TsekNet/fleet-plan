@@ -138,11 +138,12 @@ type ParsedSoftware struct {
 
 // ParsedSoftwarePackage represents a custom software package.
 type ParsedSoftwarePackage struct {
-	URL         string `yaml:"url"`
-	HashSHA256  string `yaml:"hash_sha256"`
-	SelfService bool   `yaml:"self_service"`
-	SourceFile  string `yaml:"-"`
-	RefPath     string `yaml:"-"`
+	URL         string   `yaml:"url"`
+	HashSHA256  string   `yaml:"hash_sha256"`
+	SelfService bool     `yaml:"self_service"`
+	SourceFile  string   `yaml:"-"`
+	RefPath     string   `yaml:"-"`
+	SourceFiles []string `yaml:"-"` // all referenced file paths (install/uninstall scripts, pre_install_query)
 }
 
 // ParsedFleetApp represents a Fleet-maintained app.
@@ -230,6 +231,17 @@ type rawFleetApp struct {
 type rawSoftwareRef struct {
 	Path        string `yaml:"path"`
 	SelfService *bool  `yaml:"self_service"`
+}
+
+// rawSoftwarePackage captures script path: refs inside a software package YAML file.
+type rawSoftwarePackage struct {
+	URL               string      `yaml:"url"`
+	HashSHA256        string      `yaml:"hash_sha256"`
+	SelfService       bool        `yaml:"self_service"`
+	InstallScript     *rawPathRef `yaml:"install_script"`
+	UninstallScript   *rawPathRef `yaml:"uninstall_script"`
+	PreInstallQuery   *rawPathRef `yaml:"pre_install_query"`
+	PostInstallScript *rawPathRef `yaml:"post_install_script"`
 }
 
 type rawControls struct {
@@ -522,19 +534,44 @@ func resolveQueryRef(baseDir, refPath, parentFile string) ([]ParsedQuery, []Pars
 	return items, nil
 }
 
-// resolveSoftwareRef reads a software package YAML file.
+// resolveSoftwareRef reads a software package YAML file and resolves any
+// install_script, uninstall_script, pre_install_query, or post_install_script
+// path: references within it. The resolved paths are tracked in SourceFiles
+// so the changed-file filter can match script-only MR changes.
 func resolveSoftwareRef(baseDir, refPath, parentFile string) ([]ParsedSoftwarePackage, []ParseError) {
 	data, resolved, errs := readYAMLRef(baseDir, refPath, parentFile, "software ")
 	if errs != nil {
 		return nil, errs
 	}
 
-	var pkg ParsedSoftwarePackage
-	if err := yaml.Unmarshal(data, &pkg); err != nil {
+	var raw rawSoftwarePackage
+	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, []ParseError{{File: resolved, Message: fmt.Sprintf("YAML parse error: %s", err)}}
 	}
-	pkg.SourceFile = resolved
-	return []ParsedSoftwarePackage{pkg}, nil
+
+	pkg := ParsedSoftwarePackage{
+		URL:         raw.URL,
+		HashSHA256:  raw.HashSHA256,
+		SelfService: raw.SelfService,
+		SourceFile:  resolved,
+	}
+
+	pkgDir := filepath.Dir(resolved)
+	for _, ref := range []*rawPathRef{raw.InstallScript, raw.UninstallScript, raw.PreInstallQuery, raw.PostInstallScript} {
+		if ref == nil || ref.Path == "" {
+			continue
+		}
+		scriptPath := filepath.Join(pkgDir, ref.Path)
+		if repoRoot != "" {
+			if err := safePath(repoRoot, scriptPath); err != nil {
+				errs = append(errs, ParseError{File: resolved, Message: err.Error()})
+				continue
+			}
+		}
+		pkg.SourceFiles = append(pkg.SourceFiles, scriptPath)
+	}
+
+	return []ParsedSoftwarePackage{pkg}, errs
 }
 
 // resolveFleetApp resolves path: references in a fleet-maintained app entry,

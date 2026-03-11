@@ -523,6 +523,57 @@ func TestValidateLogging(t *testing.T) {
 	}
 }
 
+// TestParseSoftwarePackageScriptSourceFiles verifies that install_script,
+// uninstall_script, and other path: refs inside a software package YAML are
+// resolved and tracked in SourceFiles. This enables the changed-file filter
+// to match MRs that only modify scripts (no YAML changes).
+func TestParseSoftwarePackageScriptSourceFiles(t *testing.T) {
+	root := testutil.TestdataRoot(t)
+
+	repo, err := ParseRepo(root, []string{"Workstations"}, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Errors) > 0 {
+		for _, e := range repo.Errors {
+			t.Logf("parse error: %s", e)
+		}
+		t.Fatalf("expected zero parse errors, got %d", len(repo.Errors))
+	}
+
+	ws := &repo.Teams[0]
+	var exApp *ParsedSoftwarePackage
+	for i := range ws.Software.Packages {
+		if strings.Contains(ws.Software.Packages[i].RefPath, "example-app") {
+			exApp = &ws.Software.Packages[i]
+			break
+		}
+	}
+	if exApp == nil {
+		t.Fatal("example-app package not found")
+	}
+
+	if len(exApp.SourceFiles) != 2 {
+		t.Fatalf("expected 2 SourceFiles (install.ps1, uninstall.ps1), got %d: %v", len(exApp.SourceFiles), exApp.SourceFiles)
+	}
+
+	hasInstall, hasUninstall := false, false
+	for _, sf := range exApp.SourceFiles {
+		if strings.HasSuffix(sf, "install.ps1") && !strings.Contains(sf, "uninstall") {
+			hasInstall = true
+		}
+		if strings.HasSuffix(sf, "uninstall.ps1") {
+			hasUninstall = true
+		}
+	}
+	if !hasInstall {
+		t.Errorf("expected install.ps1 in SourceFiles, got %v", exApp.SourceFiles)
+	}
+	if !hasUninstall {
+		t.Errorf("expected uninstall.ps1 in SourceFiles, got %v", exApp.SourceFiles)
+	}
+}
+
 // TestParseRepoDuplicateSoftwareRefs verifies duplicate software ref detection.
 func TestParseRepoDuplicateSoftwareRefs(t *testing.T) {
 	root := t.TempDir()

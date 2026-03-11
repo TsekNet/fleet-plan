@@ -1453,6 +1453,127 @@ func TestStripArchSuffix(t *testing.T) {
 	}
 }
 
+// TestDiffChangedFileFilterIncludesScriptSourceFiles verifies that when only a
+// script file changes (no YAML changes), the changed-file filter still includes
+// the parent software package in the diff output. Regression test for #11.
+func TestDiffChangedFileFilterIncludesScriptSourceFiles(t *testing.T) {
+	current := &api.FleetState{
+		Teams: []api.Team{
+			{
+				ID:   1,
+				Name: "Workstations",
+				Software: api.TeamSoftware{
+					Packages: []api.TeamSoftwarePackage{
+						{
+							ReferencedYAMLPath: "software/mac/printers-hq/printers-hq.yml",
+							URL:                "https://example.com/printers-hq-1.0.pkg",
+						},
+						{
+							ReferencedYAMLPath: "software/mac/slack/slack.yml",
+							URL:                "https://example.com/slack-old.dmg",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{
+			{
+				Name: "Workstations",
+				Software: parser.ParsedSoftware{
+					Packages: []parser.ParsedSoftwarePackage{
+						{
+							RefPath:    "software/mac/printers-hq/printers-hq.yml",
+							URL:        "https://example.com/printers-hq-2.0.pkg",
+							SourceFile: "/repo/software/mac/printers-hq/printers-hq.yml",
+							SourceFiles: []string{
+								"/repo/software/mac/printers-hq/printers-hq-install.sh",
+								"/repo/software/mac/printers-hq/printers-hq-uninstall.sh",
+							},
+						},
+						{
+							RefPath:    "software/mac/slack/slack.yml",
+							URL:        "https://example.com/slack-new.dmg",
+							SourceFile: "/repo/software/mac/slack/slack.yml",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Only the install script changed, no YAML changes.
+	changedFiles := []string{
+		"software/mac/printers-hq/printers-hq-install.sh",
+	}
+
+	results := Diff(current, proposed, nil, changedFiles)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+
+	// printers-hq should appear (its install script is in changedFiles).
+	if len(r.Software.Modified) != 1 {
+		t.Fatalf("expected 1 modified package (printers-hq via script match), got %d modified, %d added, %d deleted",
+			len(r.Software.Modified), len(r.Software.Added), len(r.Software.Deleted))
+	}
+	if !strings.Contains(r.Software.Modified[0].Name, "printers-hq") {
+		t.Errorf("expected printers-hq in modified, got %q", r.Software.Modified[0].Name)
+	}
+
+	// slack should be filtered out (its YAML is not in changedFiles).
+	for _, m := range r.Software.Modified {
+		if strings.Contains(m.Name, "slack") {
+			t.Errorf("slack should be filtered out, but found in modified: %q", m.Name)
+		}
+	}
+}
+
+// TestDiffChangedFileFilterYAMLStillWorks verifies that the changed-file filter
+// continues to work for YAML-only changes (no regression from script tracking).
+func TestDiffChangedFileFilterYAMLStillWorks(t *testing.T) {
+	current := &api.FleetState{
+		Teams: []api.Team{
+			{
+				ID:   1,
+				Name: "T",
+				Software: api.TeamSoftware{
+					Packages: []api.TeamSoftwarePackage{
+						{ReferencedYAMLPath: "software/mac/app/app.yml", URL: "https://example.com/old.pkg"},
+					},
+				},
+			},
+		},
+	}
+
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{
+			{
+				Name: "T",
+				Software: parser.ParsedSoftware{
+					Packages: []parser.ParsedSoftwarePackage{
+						{
+							RefPath:     "software/mac/app/app.yml",
+							URL:         "https://example.com/new.pkg",
+							SourceFile:  "/repo/software/mac/app/app.yml",
+							SourceFiles: []string{"/repo/software/mac/app/install.sh"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	results := Diff(current, proposed, nil, []string{"software/mac/app/app.yml"})
+	r := results[0]
+	if len(r.Software.Modified) != 1 {
+		t.Fatalf("expected 1 modified (YAML match), got %d", len(r.Software.Modified))
+	}
+}
+
 // findTeam locates a DiffResult by team name, failing the test if not found.
 func findTeam(t *testing.T, results []DiffResult, name string) *DiffResult {
 	t.Helper()

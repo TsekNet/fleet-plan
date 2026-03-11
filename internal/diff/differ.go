@@ -259,6 +259,9 @@ func buildSourceMap(team parser.ParsedTeam) map[string][]string {
 		}
 		if key != "" {
 			add(normalizeSoftwarePath(key), p.SourceFile)
+			for _, sf := range p.SourceFiles {
+				add(normalizeSoftwarePath(key), sf)
+			}
 		}
 	}
 	for _, f := range team.Software.FleetMaintained {
