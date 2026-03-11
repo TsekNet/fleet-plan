@@ -178,9 +178,9 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 				// the field is null but the YAML defines fleet-maintained apps,
 				// silently reconstruct the current state from software titles +
 				// the fleet-maintained catalog so we can produce an accurate diff.
-				if currentTeam.Software.FleetMaintained == nil &&
-					len(proposedTeam.Software.FleetMaintained) > 0 {
-					inferred := inferFleetMaintainedApps(currentTeam, current.FleetMaintainedCatalog)
+			if currentTeam.Software.FleetMaintained == nil &&
+				len(proposedTeam.Software.FleetMaintained) > 0 {
+					inferred := inferFleetMaintainedApps(currentTeam, current.FleetMaintainedCatalog, proposedTeam.Software.Packages)
 					currentSoftware.FleetMaintained = inferred // may be nil; that's fine
 				}
 
@@ -599,15 +599,22 @@ func sortResourceChanges(rd *ResourceDiff) {
 	sort.Slice(rd.Deleted, func(i, j int) bool { return byName(rd.Deleted[i], rd.Deleted[j]) })
 }
 
-func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp) []api.TeamFleetApp {
+func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp, proposedPackages []parser.ParsedSoftwarePackage) []api.TeamFleetApp {
 	if len(team.SoftwareTitles) == 0 || len(catalog) == 0 {
 		return nil
 	}
 
-	// When fleet_maintained_apps is null the API merges everything into
-	// team.Software.Packages, so we cannot use package URLs to distinguish
-	// custom packages from fleet-maintained ones. Instead, rely entirely on
-	// catalog-based matching (strategies 1-3 below).
+	// Build exclusion set from YAML-defined custom packages. We cannot use
+	// team.Software.Packages because the API merges fleet-maintained apps
+	// into that list when fleet_maintained_apps is null. The proposed YAML
+	// packages are the authoritative set of custom (non-FMA) software.
+	proposedPkgURLs := make(map[string]bool)
+	for _, p := range proposedPackages {
+		u := normalizeSoftwarePath(p.URL)
+		if u != "" {
+			proposedPkgURLs[u] = true
+		}
+	}
 
 	catalogByAppID := make(map[uint]api.FleetMaintainedApp)
 	catalogByTitleID := make(map[uint]api.FleetMaintainedApp)
@@ -631,6 +638,11 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp) [
 			continue
 		}
 		if title.SoftwarePackage == nil {
+			continue
+		}
+
+		packageURL := normalizeSoftwarePath(title.SoftwarePackage.PackageURL)
+		if packageURL != "" && proposedPkgURLs[packageURL] {
 			continue
 		}
 

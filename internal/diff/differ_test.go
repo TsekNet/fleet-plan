@@ -946,6 +946,60 @@ func TestDiffFleetMaintainedAppsInferenceWithMergedPackages(t *testing.T) {
 	}
 }
 
+// TestDiffFleetMaintainedAppsSkipsProposedCustomPackages verifies that titles
+// whose PackageURL matches a proposed custom package are not inferred as
+// fleet-maintained apps (prevents false REMOVED diffs for custom packages
+// that happen to share a name with a catalog entry).
+func TestDiffFleetMaintainedAppsSkipsProposedCustomPackages(t *testing.T) {
+	current := &api.FleetState{
+		FleetMaintainedCatalog: []api.FleetMaintainedApp{
+			{ID: 30, Slug: "gimp/windows", Name: "GIMP", Platform: "windows"},
+		},
+		Teams: []api.Team{
+			{
+				ID: 6, Name: "NVDI",
+				Software: api.TeamSoftware{FleetMaintained: nil},
+				SoftwareTitles: []api.SoftwareTitle{
+					{
+						ID: 99, Name: "GIMP", Source: "programs",
+						SoftwarePackage: &api.SoftwareTitlePackageMeta{
+							PackageURL: "https://download.gimp.org/gimp/v3.0/windows/gimp-3.0.4-setup.exe",
+							Platform:   "windows", SelfService: true,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{
+			{
+				Name: "NVDI",
+				Software: parser.ParsedSoftware{
+					Packages: []parser.ParsedSoftwarePackage{
+						{URL: "https://download.gimp.org/gimp/v3.0/windows/gimp-3.0.4-setup.exe"},
+					},
+					FleetMaintained: []parser.ParsedFleetApp{
+						{Slug: "some-other-app/windows", SelfService: true},
+					},
+				},
+			},
+		},
+	}
+
+	results := Diff(current, proposed, nil, nil)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	for _, d := range r.Software.Deleted {
+		if d.Name == "fleet app gimp/windows" || d.Name == "gimp/windows" {
+			t.Errorf("gimp/windows should NOT appear as deleted (it is a custom package, not FMA)")
+		}
+	}
+}
+
 // TestDiffFleetMaintainedAppsInferenceArchSuffix verifies that inference
 // matches titles whose OS-reported name includes an architecture suffix
 // (e.g., "Notepad++ (64-bit x64)") against catalog entries without it.
