@@ -178,9 +178,9 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 				// the field is null but the YAML defines fleet-maintained apps,
 				// silently reconstruct the current state from software titles +
 				// the fleet-maintained catalog so we can produce an accurate diff.
-				if currentTeam.Software.FleetMaintained == nil &&
-					len(proposedTeam.Software.FleetMaintained) > 0 {
-					inferred := inferFleetMaintainedApps(currentTeam, current.FleetMaintainedCatalog)
+			if currentTeam.Software.FleetMaintained == nil &&
+				len(proposedTeam.Software.FleetMaintained) > 0 {
+					inferred := inferFleetMaintainedApps(currentTeam, current.FleetMaintainedCatalog, proposedTeam.Software.Packages)
 					currentSoftware.FleetMaintained = inferred // may be nil; that's fine
 				}
 
@@ -599,27 +599,27 @@ func sortResourceChanges(rd *ResourceDiff) {
 	sort.Slice(rd.Deleted, func(i, j int) bool { return byName(rd.Deleted[i], rd.Deleted[j]) })
 }
 
-func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp) []api.TeamFleetApp {
+func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp, proposedPackages []parser.ParsedSoftwarePackage) []api.TeamFleetApp {
 	if len(team.SoftwareTitles) == 0 || len(catalog) == 0 {
 		return nil
 	}
 
-	customPackageURLs := make(map[string]bool)
-	for _, p := range team.Software.Packages {
+	// Build exclusion set from YAML-defined custom packages. We cannot use
+	// team.Software.Packages because the API merges fleet-maintained apps
+	// into that list when fleet_maintained_apps is null. The proposed YAML
+	// packages are the authoritative set of custom (non-FMA) software.
+	proposedPkgURLs := make(map[string]bool)
+	for _, p := range proposedPackages {
 		u := normalizeSoftwarePath(p.URL)
 		if u != "" {
-			customPackageURLs[u] = true
+			proposedPkgURLs[u] = true
 		}
 	}
 
-	// Index 1 (strongest): catalog app ID -> catalog entry.
-	// The API returns fleet_maintained_app_id on software titles that were
-	// installed via a fleet-maintained app; this is the most reliable join.
 	catalogByAppID := make(map[uint]api.FleetMaintainedApp)
-	// Index 2: catalog SoftwareTitleID -> catalog entry.
 	catalogByTitleID := make(map[uint]api.FleetMaintainedApp)
-	// Index 3 (weakest): lowercase name|platform -> catalog entries.
 	catalogByNamePlatform := make(map[string][]api.FleetMaintainedApp)
+	catalogByPlatform := make(map[string][]api.FleetMaintainedApp)
 	for _, app := range catalog {
 		if app.ID != 0 {
 			catalogByAppID[app.ID] = app
@@ -630,6 +630,10 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp) [
 		key := fleetCatalogKey(app.Name, app.Platform)
 		if key != "" {
 			catalogByNamePlatform[key] = append(catalogByNamePlatform[key], app)
+		}
+		plat := normalizeFleetPlatform(app.Platform)
+		if plat != "" {
+			catalogByPlatform[plat] = append(catalogByPlatform[plat], app)
 		}
 	}
 
@@ -643,14 +647,11 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp) [
 		}
 
 		packageURL := normalizeSoftwarePath(title.SoftwarePackage.PackageURL)
-		if packageURL != "" && customPackageURLs[packageURL] {
+		if packageURL != "" && proposedPkgURLs[packageURL] {
 			continue
 		}
 
 		// Strategy 1: match by fleet_maintained_app_id (exact, from API).
-		// This works across all platforms (macOS source="apps", Windows
-		// source="programs"/"ps1_packages") so we check it before any
-		// source-based filtering.
 		if title.SoftwarePackage.FleetMaintainedAppID != nil {
 			if app, ok := catalogByAppID[*title.SoftwarePackage.FleetMaintainedAppID]; ok {
 				slug := normalizeSoftwarePath(app.Slug)
@@ -662,13 +663,6 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp) [
 					continue
 				}
 			}
-		}
-
-		// Strategies 2 and 3 rely on heuristics that only work reliably for
-		// macOS "apps" source titles. Skip other sources to avoid false matches
-		// against custom packages (source="programs", "deb_packages", etc.).
-		if !strings.EqualFold(strings.TrimSpace(title.Source), "apps") {
-			continue
 		}
 
 		// Strategy 2: match by SoftwareTitleID -> catalog SoftwareTitleID.
@@ -683,9 +677,24 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp) [
 			}
 		}
 
-		// Strategy 3: match by name|platform (requires exactly 1 match).
+		// Strategy 3: match by name|platform (requires exactly 1 catalog hit).
+		// Windows titles often include arch suffixes (e.g., "Notepad++ (64-bit x64)")
+		// that the catalog omits, so try the raw name first, then stripped.
+		// The catalog uses short marketing names (e.g., "OBS", "Zoom") while the
+		// OS reports full product names (e.g., "OBS Studio", "Zoom Workplace"),
+		// so fall back to prefix matching when exact/stripped matching fails.
 		key := fleetCatalogKey(title.Name, title.SoftwarePackage.Platform)
 		matches := catalogByNamePlatform[key]
+		if len(matches) != 1 {
+			stripped := stripArchSuffix(title.Name)
+			if stripped != strings.TrimSpace(strings.ToLower(title.Name)) {
+				key = fleetCatalogKey(stripped, title.SoftwarePackage.Platform)
+				matches = catalogByNamePlatform[key]
+			}
+		}
+		if len(matches) != 1 {
+			matches = catalogPrefixMatch(title.Name, title.SoftwarePackage.Platform, catalogByPlatform)
+		}
 		if len(matches) != 1 {
 			continue
 		}
@@ -710,6 +719,31 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp) [
 	return out
 }
 
+// catalogPrefixMatch finds catalog entries whose name is a prefix of the
+// title name on the same platform. Returns matches only when exactly one
+// catalog entry qualifies (ambiguous results are discarded). This handles
+// cases where the catalog uses short marketing names ("OBS", "Zoom") while
+// the OS reports full product names ("OBS Studio", "Zoom Workplace").
+func catalogPrefixMatch(titleName, titlePlatform string, byPlatform map[string][]api.FleetMaintainedApp) []api.FleetMaintainedApp {
+	plat := normalizeFleetPlatform(titlePlatform)
+	candidates := byPlatform[plat]
+	if len(candidates) == 0 {
+		return nil
+	}
+	norm := strings.TrimSpace(strings.ToLower(stripArchSuffix(titleName)))
+	if norm == "" {
+		return nil
+	}
+	var hits []api.FleetMaintainedApp
+	for _, app := range candidates {
+		catName := strings.TrimSpace(strings.ToLower(app.Name))
+		if catName != "" && strings.HasPrefix(norm, catName) {
+			hits = append(hits, app)
+		}
+	}
+	return hits
+}
+
 func fleetCatalogKey(name, platform string) string {
 	name = strings.TrimSpace(strings.ToLower(name))
 	platform = normalizeFleetPlatform(platform)
@@ -717,6 +751,12 @@ func fleetCatalogKey(name, platform string) string {
 		return ""
 	}
 	return name + "|" + platform
+}
+
+var archSuffixRe = regexp.MustCompile(`(?i)\s*\((?:x64|x86|64-bit(?:\s+x64)?|32-bit|arm64|amd64)\)\s*$`)
+
+func stripArchSuffix(name string) string {
+	return strings.TrimSpace(archSuffixRe.ReplaceAllString(name, ""))
 }
 
 func normalizeFleetPlatform(platform string) string {
