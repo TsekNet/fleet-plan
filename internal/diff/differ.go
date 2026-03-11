@@ -619,6 +619,7 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp, p
 	catalogByAppID := make(map[uint]api.FleetMaintainedApp)
 	catalogByTitleID := make(map[uint]api.FleetMaintainedApp)
 	catalogByNamePlatform := make(map[string][]api.FleetMaintainedApp)
+	catalogByPlatform := make(map[string][]api.FleetMaintainedApp)
 	for _, app := range catalog {
 		if app.ID != 0 {
 			catalogByAppID[app.ID] = app
@@ -629,6 +630,10 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp, p
 		key := fleetCatalogKey(app.Name, app.Platform)
 		if key != "" {
 			catalogByNamePlatform[key] = append(catalogByNamePlatform[key], app)
+		}
+		plat := normalizeFleetPlatform(app.Platform)
+		if plat != "" {
+			catalogByPlatform[plat] = append(catalogByPlatform[plat], app)
 		}
 	}
 
@@ -675,6 +680,9 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp, p
 		// Strategy 3: match by name|platform (requires exactly 1 catalog hit).
 		// Windows titles often include arch suffixes (e.g., "Notepad++ (64-bit x64)")
 		// that the catalog omits, so try the raw name first, then stripped.
+		// The catalog uses short marketing names (e.g., "OBS", "Zoom") while the
+		// OS reports full product names (e.g., "OBS Studio", "Zoom Workplace"),
+		// so fall back to prefix matching when exact/stripped matching fails.
 		key := fleetCatalogKey(title.Name, title.SoftwarePackage.Platform)
 		matches := catalogByNamePlatform[key]
 		if len(matches) != 1 {
@@ -683,6 +691,9 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp, p
 				key = fleetCatalogKey(stripped, title.SoftwarePackage.Platform)
 				matches = catalogByNamePlatform[key]
 			}
+		}
+		if len(matches) != 1 {
+			matches = catalogPrefixMatch(title.Name, title.SoftwarePackage.Platform, catalogByPlatform)
 		}
 		if len(matches) != 1 {
 			continue
@@ -706,6 +717,31 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp, p
 		out = append(out, app)
 	}
 	return out
+}
+
+// catalogPrefixMatch finds catalog entries whose name is a prefix of the
+// title name on the same platform. Returns matches only when exactly one
+// catalog entry qualifies (ambiguous results are discarded). This handles
+// cases where the catalog uses short marketing names ("OBS", "Zoom") while
+// the OS reports full product names ("OBS Studio", "Zoom Workplace").
+func catalogPrefixMatch(titleName, titlePlatform string, byPlatform map[string][]api.FleetMaintainedApp) []api.FleetMaintainedApp {
+	plat := normalizeFleetPlatform(titlePlatform)
+	candidates := byPlatform[plat]
+	if len(candidates) == 0 {
+		return nil
+	}
+	norm := strings.TrimSpace(strings.ToLower(stripArchSuffix(titleName)))
+	if norm == "" {
+		return nil
+	}
+	var hits []api.FleetMaintainedApp
+	for _, app := range candidates {
+		catName := strings.TrimSpace(strings.ToLower(app.Name))
+		if catName != "" && strings.HasPrefix(norm, catName) {
+			hits = append(hits, app)
+		}
+	}
+	return hits
 }
 
 func fleetCatalogKey(name, platform string) string {
