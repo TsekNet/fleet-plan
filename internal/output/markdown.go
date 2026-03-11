@@ -165,10 +165,19 @@ func mdCodeSpan(s string) string {
 	if s == "" {
 		return "_(empty)_"
 	}
+	s = mdEscapeTableCell(s)
 	if !strings.Contains(s, "`") {
 		return "`" + s + "`"
 	}
 	return "`` " + s + " ``"
+}
+
+// mdEscapeTableCell escapes characters that break markdown table cells.
+func mdEscapeTableCell(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "|", "\\|")
+	return s
 }
 
 func mdFieldDetails(fields map[string]diff.FieldDiff) string {
