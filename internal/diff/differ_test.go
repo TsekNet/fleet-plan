@@ -1053,6 +1053,69 @@ func TestDiffFleetMaintainedAppsInferenceArchSuffix(t *testing.T) {
 	}
 }
 
+// TestDiffFleetMaintainedAppsInferencePrefixMatch verifies that inference
+// matches titles whose OS-reported name is longer than the catalog's short
+// marketing name (e.g., "OBS Studio" -> catalog "OBS", "Zoom Workplace" ->
+// catalog "Zoom") via prefix matching.
+func TestDiffFleetMaintainedAppsInferencePrefixMatch(t *testing.T) {
+	current := &api.FleetState{
+		FleetMaintainedCatalog: []api.FleetMaintainedApp{
+			{ID: 50, Slug: "obs/windows", Name: "OBS", Platform: "windows"},
+			{ID: 51, Slug: "zoom/windows", Name: "Zoom", Platform: "windows"},
+		},
+		Teams: []api.Team{
+			{
+				ID: 6, Name: "NVDI",
+				Software: api.TeamSoftware{FleetMaintained: nil},
+				SoftwareTitles: []api.SoftwareTitle{
+					{
+						ID: 16700, Name: "OBS Studio", Source: "programs",
+						SoftwarePackage: &api.SoftwareTitlePackageMeta{
+							PackageURL: "https://github.com/obsproject/obs-studio/releases/download/32.0.4/OBS-Studio-32.0.4-Windows-x64-Installer.exe",
+							Platform:   "windows", SelfService: true,
+						},
+					},
+					{
+						ID: 16731, Name: "Zoom Workplace (X64)", Source: "programs",
+						SoftwarePackage: &api.SoftwareTitlePackageMeta{
+							PackageURL: "https://zoom.us/client/6.7.5.30439/ZoomInstallerFull.msi?archType=x64",
+							Platform:   "windows", SelfService: true,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{
+			{
+				Name: "NVDI",
+				Software: parser.ParsedSoftware{
+					FleetMaintained: []parser.ParsedFleetApp{
+						{Slug: "obs/windows", SelfService: true},
+						{Slug: "zoom/windows", SelfService: true},
+					},
+				},
+			},
+		},
+	}
+
+	results := Diff(current, proposed, nil, nil)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if len(r.Software.Added) != 0 {
+		var slugs []string
+		for _, a := range r.Software.Added {
+			slugs = append(slugs, a.Name)
+		}
+		t.Errorf("expected 0 added (prefix matching should resolve OBS/Zoom), got %d: %v",
+			len(r.Software.Added), slugs)
+	}
+}
+
 // TestDiffProfilesMatchByContentName verifies that profiles are matched by
 // the name extracted from file content (e.g., PayloadDisplayName), not by
 // filename. This is the exact bug that caused false add/delete diffs when
