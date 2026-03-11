@@ -197,18 +197,16 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 			} else {
 				currentSoftware := currentTeam.Software
 
-				// Fleet's /teams API returns fleet_maintained_apps: null for some
-				// teams even when they have fleet-maintained apps configured. When
-				// the field is null but the YAML defines fleet-maintained apps,
-				// silently reconstruct the current state from software titles +
-				// the fleet-maintained catalog so we can produce an accurate diff.
-			if currentTeam.Software.FleetMaintained == nil &&
-				len(proposedTeam.Software.FleetMaintained) > 0 {
+				// Fleet's /teams API may return fleet_maintained_apps: null, or
+				// return a partial list (e.g., only macOS FMAs while Windows FMAs
+				// are merged into packages). Infer from software titles + catalog
+				// and merge with any API-provided entries to get the full picture.
+				if len(proposedTeam.Software.FleetMaintained) > 0 {
 					inferred := inferFleetMaintainedApps(currentTeam, current.FleetMaintainedCatalog, proposedTeam.Software.Packages)
 					if cfg.enricher != nil && len(inferred) > 0 {
 						cfg.enricher.EnrichFleetAppScripts(context.Background(), inferred)
 					}
-					currentSoftware.FleetMaintained = inferred
+					currentSoftware.FleetMaintained = mergeFleetApps(currentTeam.Software.FleetMaintained, inferred)
 				}
 
 				result.Software = diffSoftware(currentSoftware, proposedTeam.Software)
@@ -654,6 +652,25 @@ func sortResourceChanges(rd *ResourceDiff) {
 	sort.Slice(rd.Added, func(i, j int) bool { return byName(rd.Added[i], rd.Added[j]) })
 	sort.Slice(rd.Modified, func(i, j int) bool { return byName(rd.Modified[i], rd.Modified[j]) })
 	sort.Slice(rd.Deleted, func(i, j int) bool { return byName(rd.Deleted[i], rd.Deleted[j]) })
+}
+
+// mergeFleetApps combines API-provided FMAs with inferred ones. API entries
+// take precedence for slugs that appear in both lists.
+func mergeFleetApps(apiApps, inferred []api.TeamFleetApp) []api.TeamFleetApp {
+	seen := make(map[string]bool, len(apiApps))
+	merged := make([]api.TeamFleetApp, 0, len(apiApps)+len(inferred))
+	for _, a := range apiApps {
+		slug := normalizeSoftwarePath(a.Slug)
+		seen[slug] = true
+		merged = append(merged, a)
+	}
+	for _, a := range inferred {
+		slug := normalizeSoftwarePath(a.Slug)
+		if !seen[slug] {
+			merged = append(merged, a)
+		}
+	}
+	return merged
 }
 
 func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp, proposedPackages []parser.ParsedSoftwarePackage) []api.TeamFleetApp {
