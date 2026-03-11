@@ -57,6 +57,9 @@ func TestDiffTestdataAgainstMockAPI(t *testing.T) {
 						// old-agent: not in YAML → deleted
 						{ReferencedYAMLPath: "software/mac/old-agent/old-agent.yml", URL: "https://example.com/old-agent.pkg"},
 					},
+					FleetMaintained: []api.TeamFleetApp{
+						{Slug: "cursor/windows", SelfService: true},
+					},
 				},
 				// Profile uses PayloadDisplayName "fleet_orbit-allowfulldiskaccess"
 				// which matches the content of the .mobileconfig file (not the filename).
@@ -1113,6 +1116,62 @@ func TestDiffFleetMaintainedAppsInferencePrefixMatch(t *testing.T) {
 		}
 		t.Errorf("expected 0 added (prefix matching should resolve OBS/Zoom), got %d: %v",
 			len(r.Software.Added), slugs)
+	}
+}
+
+// TestDiffFleetMaintainedAppsScriptChange verifies that when an FMA's install
+// script content changes, the diff reports it as modified.
+func TestDiffFleetMaintainedAppsScriptChange(t *testing.T) {
+	current := &api.FleetState{
+		FleetMaintainedCatalog: []api.FleetMaintainedApp{
+			{ID: 10, Slug: "cursor/windows", Name: "Cursor", Platform: "windows"},
+		},
+		Teams: []api.Team{
+			{
+				ID: 6, Name: "NVDI",
+				Software: api.TeamSoftware{
+					FleetMaintained: []api.TeamFleetApp{
+						{
+							Slug:          "cursor/windows",
+							SelfService:   true,
+							InstallScript: "old-install-script",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{
+			{
+				Name: "NVDI",
+				Software: parser.ParsedSoftware{
+					FleetMaintained: []parser.ParsedFleetApp{
+						{
+							Slug:          "cursor/windows",
+							SelfService:   true,
+							InstallScript: "new-install-script",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	results := Diff(current, proposed, nil, nil)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if len(r.Software.Modified) != 1 {
+		t.Fatalf("expected 1 modified FMA, got %d (added=%d)", len(r.Software.Modified), len(r.Software.Added))
+	}
+	if r.Software.Modified[0].Name != "fleet app cursor/windows" {
+		t.Errorf("unexpected modified name: %q", r.Software.Modified[0].Name)
+	}
+	if _, ok := r.Software.Modified[0].Fields["install_script"]; !ok {
+		t.Error("expected install_script field diff")
 	}
 }
 

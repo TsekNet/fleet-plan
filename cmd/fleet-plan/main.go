@@ -116,7 +116,8 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	results := diff.Diff(state, repo, flagTeams, flagChangedFiles)
+	results := diff.Diff(state, repo, flagTeams, flagChangedFiles,
+		diff.WithScriptEnricher(client))
 	elapsed := time.Since(start)
 
 	hasChanges := output.HasChanges(results)

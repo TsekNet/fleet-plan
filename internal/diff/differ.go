@@ -4,6 +4,7 @@
 package diff
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -95,12 +96,35 @@ func matchesAnyTeam(name string, filters []string) bool {
 
 // ---------- Diff engine ----------
 
+// ScriptEnricher fetches script content for inferred fleet-maintained apps.
+// Implementations should populate InstallScript, UninstallScript, etc. on each
+// TeamFleetApp that has a non-zero TitleID.
+type ScriptEnricher interface {
+	EnrichFleetAppScripts(ctx context.Context, apps []api.TeamFleetApp)
+}
+
+// DiffOption configures optional Diff behavior.
+type DiffOption func(*diffOptions)
+
+type diffOptions struct {
+	enricher ScriptEnricher
+}
+
+// WithScriptEnricher enables script-level diffing for fleet-maintained apps.
+func WithScriptEnricher(e ScriptEnricher) DiffOption {
+	return func(o *diffOptions) { o.enricher = e }
+}
+
 // Diff computes the diff between current Fleet state and proposed YAML for all
 // teams. If teamFilters is non-empty, only matching teams are diffed.
 // If changedFiles is non-empty, only resources whose SourceFile matches are
 // included in the output (MR-scoped filtering).
 // Global config from default.yml is diffed when proposed.Global is non-nil.
-func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []string, changedFiles []string) []DiffResult {
+func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []string, changedFiles []string, opts ...DiffOption) []DiffResult {
+	var cfg diffOptions
+	for _, o := range opts {
+		o(&cfg)
+	}
 	var results []DiffResult
 
 	// Build label lookup from API
@@ -181,7 +205,10 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 			if currentTeam.Software.FleetMaintained == nil &&
 				len(proposedTeam.Software.FleetMaintained) > 0 {
 					inferred := inferFleetMaintainedApps(currentTeam, current.FleetMaintainedCatalog, proposedTeam.Software.Packages)
-					currentSoftware.FleetMaintained = inferred // may be nil; that's fine
+					if cfg.enricher != nil && len(inferred) > 0 {
+						cfg.enricher.EnrichFleetAppScripts(context.Background(), inferred)
+					}
+					currentSoftware.FleetMaintained = inferred
 				}
 
 				result.Software = diffSoftware(currentSoftware, proposedTeam.Software)
@@ -211,13 +238,18 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 	return results
 }
 
-func buildSourceMap(team parser.ParsedTeam) map[string]string {
-	m := make(map[string]string)
+func buildSourceMap(team parser.ParsedTeam) map[string][]string {
+	m := make(map[string][]string)
+	add := func(name, src string) {
+		if name != "" && src != "" {
+			m[name] = append(m[name], src)
+		}
+	}
 	for _, p := range team.Policies {
-		m[p.Name] = p.SourceFile
+		add(p.Name, p.SourceFile)
 	}
 	for _, q := range team.Queries {
-		m[q.Name] = q.SourceFile
+		add(q.Name, q.SourceFile)
 	}
 	for _, p := range team.Software.Packages {
 		key := normalizeSoftwarePath(p.RefPath)
@@ -228,30 +260,37 @@ func buildSourceMap(team parser.ParsedTeam) map[string]string {
 			key = normalizeSoftwarePath(p.URL)
 		}
 		if key != "" {
-			m[normalizeSoftwarePath(key)] = p.SourceFile
+			add(normalizeSoftwarePath(key), p.SourceFile)
 		}
 	}
 	for _, f := range team.Software.FleetMaintained {
 		slug := normalizeSoftwarePath(f.Slug)
-		if slug != "" {
-			m["fleet app "+slug] = team.SourceFile
+		if slug == "" {
+			continue
+		}
+		name := "fleet app " + slug
+		add(name, team.SourceFile)
+		for _, sf := range f.SourceFiles {
+			add(name, sf)
 		}
 	}
 	for _, p := range team.Profiles {
-		m[p.Name] = p.SourceFile
+		add(p.Name, p.SourceFile)
 	}
 	return m
 }
 
-func filterResourceDiff(rd ResourceDiff, sourceNames map[string]string, changedFiles []string) ResourceDiff {
+func filterResourceDiff(rd ResourceDiff, sourceNames map[string][]string, changedFiles []string) ResourceDiff {
 	match := func(name string) bool {
-		src, ok := sourceNames[name]
+		srcs, ok := sourceNames[name]
 		if !ok {
 			return true
 		}
-		for _, cf := range changedFiles {
-			if src == cf || strings.HasSuffix(src, "/"+cf) {
-				return true
+		for _, src := range srcs {
+			for _, cf := range changedFiles {
+				if src == cf || strings.HasSuffix(src, "/"+cf) {
+					return true
+				}
 			}
 		}
 		return false
@@ -501,15 +540,33 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) Reso
 				})
 				continue
 			}
+			fields := make(map[string]FieldDiff)
 			if cur.SelfService != a.SelfService {
+				fields["self_service"] = FieldDiff{
+					Old: fmt.Sprint(cur.SelfService),
+					New: fmt.Sprint(a.SelfService),
+				}
+			}
+			if cur.InstallScript != "" && a.InstallScript != "" &&
+				normalizeWS(cur.InstallScript) != normalizeWS(a.InstallScript) {
+				fields["install_script"] = FieldDiff{Old: cur.InstallScript, New: a.InstallScript}
+			}
+			if cur.UninstallScript != "" && a.UninstallScript != "" &&
+				normalizeWS(cur.UninstallScript) != normalizeWS(a.UninstallScript) {
+				fields["uninstall_script"] = FieldDiff{Old: cur.UninstallScript, New: a.UninstallScript}
+			}
+			if cur.PreInstallQuery != "" && a.PreInstallQuery != "" &&
+				normalizeWS(cur.PreInstallQuery) != normalizeWS(a.PreInstallQuery) {
+				fields["pre_install_query"] = FieldDiff{Old: cur.PreInstallQuery, New: a.PreInstallQuery}
+			}
+			if cur.PostInstallScript != "" && a.PostInstallScript != "" &&
+				normalizeWS(cur.PostInstallScript) != normalizeWS(a.PostInstallScript) {
+				fields["post_install_script"] = FieldDiff{Old: cur.PostInstallScript, New: a.PostInstallScript}
+			}
+			if len(fields) > 0 {
 				rd.Modified = append(rd.Modified, ResourceChange{
-					Name: "fleet app " + slug,
-					Fields: map[string]FieldDiff{
-						"self_service": {
-							Old: fmt.Sprint(cur.SelfService),
-							New: fmt.Sprint(a.SelfService),
-						},
-					},
+					Name:   "fleet app " + slug,
+					Fields: fields,
 				})
 			}
 		}
@@ -651,15 +708,21 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp, p
 			continue
 		}
 
+		record := func(slug string) {
+			inferred[slug] = api.TeamFleetApp{
+				Slug:        slug,
+				SelfService: title.SoftwarePackage.SelfService,
+				TitleID:     title.ID,
+				TeamID:      team.ID,
+			}
+		}
+
 		// Strategy 1: match by fleet_maintained_app_id (exact, from API).
 		if title.SoftwarePackage.FleetMaintainedAppID != nil {
 			if app, ok := catalogByAppID[*title.SoftwarePackage.FleetMaintainedAppID]; ok {
 				slug := normalizeSoftwarePath(app.Slug)
 				if slug != "" {
-					inferred[slug] = api.TeamFleetApp{
-						Slug:        slug,
-						SelfService: title.SoftwarePackage.SelfService,
-					}
+					record(slug)
 					continue
 				}
 			}
@@ -669,10 +732,7 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp, p
 		if app, ok := catalogByTitleID[title.ID]; ok {
 			slug := normalizeSoftwarePath(app.Slug)
 			if slug != "" {
-				inferred[slug] = api.TeamFleetApp{
-					Slug:        slug,
-					SelfService: title.SoftwarePackage.SelfService,
-				}
+				record(slug)
 				continue
 			}
 		}
@@ -703,10 +763,7 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp, p
 		if slug == "" {
 			continue
 		}
-		inferred[slug] = api.TeamFleetApp{
-			Slug:        slug,
-			SelfService: title.SoftwarePackage.SelfService,
-		}
+		record(slug)
 	}
 
 	if len(inferred) == 0 {
