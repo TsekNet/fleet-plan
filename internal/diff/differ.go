@@ -604,21 +604,13 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp) [
 		return nil
 	}
 
-	customPackageURLs := make(map[string]bool)
-	for _, p := range team.Software.Packages {
-		u := normalizeSoftwarePath(p.URL)
-		if u != "" {
-			customPackageURLs[u] = true
-		}
-	}
+	// When fleet_maintained_apps is null the API merges everything into
+	// team.Software.Packages, so we cannot use package URLs to distinguish
+	// custom packages from fleet-maintained ones. Instead, rely entirely on
+	// catalog-based matching (strategies 1-3 below).
 
-	// Index 1 (strongest): catalog app ID -> catalog entry.
-	// The API returns fleet_maintained_app_id on software titles that were
-	// installed via a fleet-maintained app; this is the most reliable join.
 	catalogByAppID := make(map[uint]api.FleetMaintainedApp)
-	// Index 2: catalog SoftwareTitleID -> catalog entry.
 	catalogByTitleID := make(map[uint]api.FleetMaintainedApp)
-	// Index 3 (weakest): lowercase name|platform -> catalog entries.
 	catalogByNamePlatform := make(map[string][]api.FleetMaintainedApp)
 	for _, app := range catalog {
 		if app.ID != 0 {
@@ -642,15 +634,7 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp) [
 			continue
 		}
 
-		packageURL := normalizeSoftwarePath(title.SoftwarePackage.PackageURL)
-		if packageURL != "" && customPackageURLs[packageURL] {
-			continue
-		}
-
 		// Strategy 1: match by fleet_maintained_app_id (exact, from API).
-		// This works across all platforms (macOS source="apps", Windows
-		// source="programs"/"ps1_packages") so we check it before any
-		// source-based filtering.
 		if title.SoftwarePackage.FleetMaintainedAppID != nil {
 			if app, ok := catalogByAppID[*title.SoftwarePackage.FleetMaintainedAppID]; ok {
 				slug := normalizeSoftwarePath(app.Slug)
@@ -662,13 +646,6 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp) [
 					continue
 				}
 			}
-		}
-
-		// Strategies 2 and 3 rely on heuristics that only work reliably for
-		// macOS "apps" source titles. Skip other sources to avoid false matches
-		// against custom packages (source="programs", "deb_packages", etc.).
-		if !strings.EqualFold(strings.TrimSpace(title.Source), "apps") {
-			continue
 		}
 
 		// Strategy 2: match by SoftwareTitleID -> catalog SoftwareTitleID.
@@ -683,7 +660,7 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp) [
 			}
 		}
 
-		// Strategy 3: match by name|platform (requires exactly 1 match).
+		// Strategy 3: match by name|platform (requires exactly 1 catalog hit).
 		key := fleetCatalogKey(title.Name, title.SoftwarePackage.Platform)
 		matches := catalogByNamePlatform[key]
 		if len(matches) != 1 {
