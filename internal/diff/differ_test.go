@@ -946,6 +946,59 @@ func TestDiffFleetMaintainedAppsInferenceWithMergedPackages(t *testing.T) {
 	}
 }
 
+// TestDiffFleetMaintainedAppsInferenceArchSuffix verifies that inference
+// matches titles whose OS-reported name includes an architecture suffix
+// (e.g., "Notepad++ (64-bit x64)") against catalog entries without it.
+func TestDiffFleetMaintainedAppsInferenceArchSuffix(t *testing.T) {
+	current := &api.FleetState{
+		FleetMaintainedCatalog: []api.FleetMaintainedApp{
+			{ID: 20, Slug: "notepad-plus-plus/windows", Name: "Notepad++", Platform: "windows"},
+		},
+		Teams: []api.Team{
+			{
+				ID: 6, Name: "NVDI",
+				Software: api.TeamSoftware{FleetMaintained: nil},
+				SoftwareTitles: []api.SoftwareTitle{
+					{
+						ID: 15977, Name: "Notepad++ (64-bit x64)", Source: "programs",
+						SoftwarePackage: &api.SoftwareTitlePackageMeta{
+							PackageURL: "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.2/npp.8.9.2.Installer.x64.exe",
+							Platform:   "windows", SelfService: true,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{
+			{
+				Name: "NVDI",
+				Software: parser.ParsedSoftware{
+					FleetMaintained: []parser.ParsedFleetApp{
+						{Slug: "notepad-plus-plus/windows", SelfService: true},
+					},
+				},
+			},
+		},
+	}
+
+	results := Diff(current, proposed, nil, nil)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if len(r.Software.Added) != 0 {
+		var slugs []string
+		for _, a := range r.Software.Added {
+			slugs = append(slugs, a.Name)
+		}
+		t.Errorf("expected 0 added (arch suffix should be stripped for matching), got %d: %v",
+			len(r.Software.Added), slugs)
+	}
+}
+
 // TestDiffProfilesMatchByContentName verifies that profiles are matched by
 // the name extracted from file content (e.g., PayloadDisplayName), not by
 // filename. This is the exact bug that caused false add/delete diffs when
@@ -1199,6 +1252,27 @@ func TestNormalizeWS(t *testing.T) {
 		got := normalizeWS(tc.in)
 		if got != tc.want {
 			t.Errorf("normalizeWS(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestStripArchSuffix(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"Notepad++ (64-bit x64)", "Notepad++"},
+		{"Zoom Workplace (X64)", "Zoom Workplace"},
+		{"7-Zip (x64)", "7-Zip"},
+		{"Something (arm64)", "Something"},
+		{"App (32-bit)", "App"},
+		{"No Suffix", "No Suffix"},
+		{"Parens (not arch)", "Parens (not arch)"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		got := stripArchSuffix(tc.in)
+		if got != tc.want {
+			t.Errorf("stripArchSuffix(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }

@@ -661,8 +661,17 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp) [
 		}
 
 		// Strategy 3: match by name|platform (requires exactly 1 catalog hit).
+		// Windows titles often include arch suffixes (e.g., "Notepad++ (64-bit x64)")
+		// that the catalog omits, so try the raw name first, then stripped.
 		key := fleetCatalogKey(title.Name, title.SoftwarePackage.Platform)
 		matches := catalogByNamePlatform[key]
+		if len(matches) != 1 {
+			stripped := stripArchSuffix(title.Name)
+			if stripped != strings.TrimSpace(strings.ToLower(title.Name)) {
+				key = fleetCatalogKey(stripped, title.SoftwarePackage.Platform)
+				matches = catalogByNamePlatform[key]
+			}
+		}
 		if len(matches) != 1 {
 			continue
 		}
@@ -694,6 +703,12 @@ func fleetCatalogKey(name, platform string) string {
 		return ""
 	}
 	return name + "|" + platform
+}
+
+var archSuffixRe = regexp.MustCompile(`(?i)\s*\((?:x64|x86|64-bit(?:\s+x64)?|32-bit|arm64|amd64)\)\s*$`)
+
+func stripArchSuffix(name string) string {
+	return strings.TrimSpace(archSuffixRe.ReplaceAllString(name, ""))
 }
 
 func normalizeFleetPlatform(platform string) string {
