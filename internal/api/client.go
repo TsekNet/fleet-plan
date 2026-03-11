@@ -144,8 +144,14 @@ type TeamSoftwarePackage struct {
 }
 
 type TeamFleetApp struct {
-	Slug        string `json:"slug"`
-	SelfService bool   `json:"self_service"`
+	Slug              string `json:"slug"`
+	SelfService       bool   `json:"self_service"`
+	TitleID           uint   `json:"-"` // software title ID, for fetching detail
+	TeamID            uint   `json:"-"`
+	InstallScript     string `json:"-"` // populated from title detail endpoint
+	UninstallScript   string `json:"-"`
+	PreInstallQuery   string `json:"-"`
+	PostInstallScript string `json:"-"`
 }
 
 type TeamAppStoreApp struct {
@@ -211,6 +217,25 @@ type SoftwareTitlePackageMeta struct {
 	SelfService          bool   `json:"self_service"`
 	Platform             string `json:"platform"`
 	FleetMaintainedAppID *uint  `json:"fleet_maintained_app_id"`
+}
+
+// SoftwareTitleDetail is the full response from GET /api/v1/fleet/software/titles/:id.
+// It includes script content not available in the list endpoint.
+type SoftwareTitleDetail struct {
+	ID              uint                        `json:"id"`
+	Name            string                      `json:"name"`
+	SoftwarePackage *SoftwareTitleDetailPackage  `json:"software_package"`
+}
+
+// SoftwareTitleDetailPackage contains the full package metadata including scripts.
+type SoftwareTitleDetailPackage struct {
+	InstallScript     string `json:"install_script"`
+	UninstallScript   string `json:"uninstall_script"`
+	PreInstallQuery   string `json:"pre_install_query"`
+	PostInstallScript string `json:"post_install_script"`
+	SelfService       bool   `json:"self_service"`
+	Platform          string `json:"platform"`
+	FleetMaintainedAppID *uint `json:"fleet_maintained_app_id"`
 }
 
 // Label represents a Fleet label.
@@ -388,6 +413,48 @@ func (c *Client) GetSoftware(ctx context.Context, teamID uint) ([]SoftwareTitle,
 		}
 	}
 	return all, nil
+}
+
+// GetSoftwareTitleDetail fetches the full detail for a single software title,
+// including script content not available in the list endpoint.
+func (c *Client) GetSoftwareTitleDetail(ctx context.Context, titleID, teamID uint) (*SoftwareTitleDetail, error) {
+	apiPath := fmt.Sprintf("/api/v1/fleet/software/titles/%d", titleID)
+	q := url.Values{}
+	if teamID > 0 {
+		q.Set("team_id", strconv.FormatUint(uint64(teamID), 10))
+	}
+	var resp struct {
+		SoftwareTitle SoftwareTitleDetail `json:"software_title"`
+	}
+	if err := c.get(ctx, apiPath, q, &resp); err != nil {
+		return nil, fmt.Errorf("fetching software title %d: %w", titleID, err)
+	}
+	return &resp.SoftwareTitle, nil
+}
+
+// EnrichFleetAppScripts fetches title details for FMAs that have a TitleID set
+// and populates their script content. Errors are non-fatal (scripts stay empty).
+func (c *Client) EnrichFleetAppScripts(ctx context.Context, apps []TeamFleetApp) {
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(5)
+	for i := range apps {
+		if apps[i].TitleID == 0 {
+			continue
+		}
+		idx := i
+		g.Go(func() error {
+			detail, err := c.GetSoftwareTitleDetail(gctx, apps[idx].TitleID, apps[idx].TeamID)
+			if err != nil || detail.SoftwarePackage == nil {
+				return nil
+			}
+			apps[idx].InstallScript = strings.TrimSpace(detail.SoftwarePackage.InstallScript)
+			apps[idx].UninstallScript = strings.TrimSpace(detail.SoftwarePackage.UninstallScript)
+			apps[idx].PreInstallQuery = strings.TrimSpace(detail.SoftwarePackage.PreInstallQuery)
+			apps[idx].PostInstallScript = strings.TrimSpace(detail.SoftwarePackage.PostInstallScript)
+			return nil
+		})
+	}
+	g.Wait()
 }
 
 // GetFleetMaintainedApps fetches Fleet's maintained-app catalog.

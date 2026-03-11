@@ -147,8 +147,13 @@ type ParsedSoftwarePackage struct {
 
 // ParsedFleetApp represents a Fleet-maintained app.
 type ParsedFleetApp struct {
-	Slug        string `yaml:"slug"`
-	SelfService bool   `yaml:"self_service"`
+	Slug              string   `yaml:"slug"`
+	SelfService       bool     `yaml:"self_service"`
+	InstallScript     string   `yaml:"-"` // resolved file content
+	UninstallScript   string   `yaml:"-"`
+	PreInstallQuery   string   `yaml:"-"`
+	PostInstallScript string   `yaml:"-"`
+	SourceFiles       []string `yaml:"-"` // all referenced file paths (for changed-file filtering)
 }
 
 // ParsedAppStoreApp represents an App Store app.
@@ -209,8 +214,17 @@ type rawPathRef struct {
 
 type rawSoftwareBlock struct {
 	Packages        []rawSoftwareRef    `yaml:"packages"`
-	FleetMaintained []ParsedFleetApp    `yaml:"fleet_maintained_apps"`
+	FleetMaintained []rawFleetApp       `yaml:"fleet_maintained_apps"`
 	AppStoreApps    []ParsedAppStoreApp `yaml:"app_store_apps"`
+}
+
+type rawFleetApp struct {
+	Slug              string       `yaml:"slug"`
+	SelfService       bool         `yaml:"self_service"`
+	InstallScript     *rawPathRef  `yaml:"install_script"`
+	UninstallScript   *rawPathRef  `yaml:"uninstall_script"`
+	PreInstallQuery   *rawPathRef  `yaml:"pre_install_query"`
+	PostInstallScript *rawPathRef  `yaml:"post_install_script"`
 }
 
 type rawSoftwareRef struct {
@@ -388,7 +402,11 @@ func parseTeamFile(path string) (*ParsedTeam, []ParseError) {
 			team.Software.Packages = append(team.Software.Packages, pkgs[i])
 		}
 	}
-	team.Software.FleetMaintained = raw.Software.FleetMaintained
+	for _, rawFMA := range raw.Software.FleetMaintained {
+		fma, fmaErrs := resolveFleetApp(dir, rawFMA, path)
+		errs = append(errs, fmaErrs...)
+		team.Software.FleetMaintained = append(team.Software.FleetMaintained, fma)
+	}
 	team.Software.AppStoreApps = raw.Software.AppStoreApps
 
 	// Resolve profile paths and extract names from file content.
@@ -517,6 +535,54 @@ func resolveSoftwareRef(baseDir, refPath, parentFile string) ([]ParsedSoftwarePa
 	}
 	pkg.SourceFile = resolved
 	return []ParsedSoftwarePackage{pkg}, nil
+}
+
+// resolveFleetApp resolves path: references in a fleet-maintained app entry,
+// reading script and query file content. Non-fatal: missing optional files are
+// logged as parse errors but the FMA is still returned.
+func resolveFleetApp(baseDir string, raw rawFleetApp, parentFile string) (ParsedFleetApp, []ParseError) {
+	var errs []ParseError
+	fma := ParsedFleetApp{
+		Slug:        raw.Slug,
+		SelfService: raw.SelfService,
+	}
+
+	readScript := func(ref *rawPathRef, label string) string {
+		if ref == nil || ref.Path == "" {
+			return ""
+		}
+		data, resolved, readErrs := readYAMLRef(baseDir, ref.Path, parentFile, label+" ")
+		if readErrs != nil {
+			errs = append(errs, readErrs...)
+			return ""
+		}
+		fma.SourceFiles = append(fma.SourceFiles, resolved)
+		return strings.TrimSpace(string(data))
+	}
+
+	fma.InstallScript = readScript(raw.InstallScript, "install_script")
+	fma.UninstallScript = readScript(raw.UninstallScript, "uninstall_script")
+	fma.PostInstallScript = readScript(raw.PostInstallScript, "post_install_script")
+
+	if raw.PreInstallQuery != nil && raw.PreInstallQuery.Path != "" {
+		data, resolved, readErrs := readYAMLRef(baseDir, raw.PreInstallQuery.Path, parentFile, "pre_install_query ")
+		if readErrs != nil {
+			errs = append(errs, readErrs...)
+		} else {
+			fma.SourceFiles = append(fma.SourceFiles, resolved)
+			// The query file may contain a YAML query definition or raw SQL.
+			var q struct {
+				Query string `yaml:"query"`
+			}
+			if yaml.Unmarshal(data, &q) == nil && q.Query != "" {
+				fma.PreInstallQuery = q.Query
+			} else {
+				fma.PreInstallQuery = strings.TrimSpace(string(data))
+			}
+		}
+	}
+
+	return fma, errs
 }
 
 // normalizeSoftwareRefPath canonicalizes teams/*.yml software package paths so
