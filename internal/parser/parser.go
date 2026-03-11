@@ -570,19 +570,28 @@ func resolveFleetApp(baseDir string, raw rawFleetApp, parentFile string) (Parsed
 			errs = append(errs, readErrs...)
 		} else {
 			fma.SourceFiles = append(fma.SourceFiles, resolved)
-			// The query file may contain a YAML query definition or raw SQL.
-			var q struct {
-				Query string `yaml:"query"`
-			}
-			if yaml.Unmarshal(data, &q) == nil && q.Query != "" {
-				fma.PreInstallQuery = q.Query
-			} else {
-				fma.PreInstallQuery = strings.TrimSpace(string(data))
-			}
+			fma.PreInstallQuery = extractQueryFromYAML(data)
 		}
 	}
 
 	return fma, errs
+}
+
+// extractQueryFromYAML extracts the SQL query from a YAML file that may be a
+// single object or a list of objects with a "query" field.
+func extractQueryFromYAML(data []byte) string {
+	type qObj struct {
+		Query string `yaml:"query"`
+	}
+	var single qObj
+	if yaml.Unmarshal(data, &single) == nil && single.Query != "" {
+		return single.Query
+	}
+	var list []qObj
+	if yaml.Unmarshal(data, &list) == nil && len(list) > 0 && list[0].Query != "" {
+		return list[0].Query
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // normalizeSoftwareRefPath canonicalizes teams/*.yml software package paths so
