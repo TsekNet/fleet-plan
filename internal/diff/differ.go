@@ -923,9 +923,10 @@ func diffScripts(current []api.Script, proposed []parser.ParsedScript) ResourceD
 			})
 			continue
 		}
-		// Compare content when both sides are available
+		// Compare content when both sides are available.
+		// Normalize line endings (\r\n → \n) and trim before comparing.
 		if cur.Content != "" && s.Content != "" &&
-			normalizeWS(cur.Content) != normalizeWS(s.Content) {
+			normalizeScript(cur.Content) != normalizeScript(s.Content) {
 			diff.Modified = append(diff.Modified, ResourceChange{
 				Name:   s.Name,
 				Fields: map[string]FieldDiff{"content": {Old: "(changed)", New: "(changed)"}},
@@ -1201,6 +1202,12 @@ func getNestedValue(m map[string]any, key string) string {
 }
 
 // ---------- Helpers ----------
+
+// normalizeScript normalizes a script for comparison: trims whitespace and
+// converts \r\n to \n so line-ending differences don't cause false positives.
+func normalizeScript(s string) string {
+	return strings.TrimSpace(strings.ReplaceAll(s, "\r\n", "\n"))
+}
 
 // normalizeWS collapses all whitespace runs into a single space and trims.
 // Used for comparison only — the raw values are stored in FieldDiff so the
