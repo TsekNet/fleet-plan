@@ -1251,12 +1251,12 @@ func scriptDiffSummary(old, new string) string {
 			}
 			if o != n {
 				if o == "" {
-					return fmt.Sprintf("+L%d", i+1)
+					return fmt.Sprintf("+Line %d", i+1)
 				}
 				if n == "" {
-					return fmt.Sprintf("-L%d", i+1)
+					return fmt.Sprintf("-Line %d", i+1)
 				}
-				return fmt.Sprintf("~L%d", i+1)
+				return fmt.Sprintf("~Line %d", i+1)
 			}
 		}
 	}
