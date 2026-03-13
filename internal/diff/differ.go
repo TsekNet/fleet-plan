@@ -927,9 +927,10 @@ func diffScripts(current []api.Script, proposed []parser.ParsedScript) ResourceD
 		// Normalize line endings (\r\n → \n) and trim before comparing.
 		if cur.Content != "" && s.Content != "" &&
 			normalizeScript(cur.Content) != normalizeScript(s.Content) {
+			detail := scriptDiffSummary(normalizeScript(cur.Content), normalizeScript(s.Content))
 			diff.Modified = append(diff.Modified, ResourceChange{
 				Name:   s.Name,
-				Fields: map[string]FieldDiff{"content": {Old: "(changed)", New: "(changed)"}},
+				Fields: map[string]FieldDiff{"content": {Old: detail, New: detail}},
 			})
 		}
 	}
@@ -1202,6 +1203,57 @@ func getNestedValue(m map[string]any, key string) string {
 }
 
 // ---------- Helpers ----------
+
+// scriptDiffSummary returns a human-readable summary of what changed between
+// two normalized script contents. For single-line changes it shows the line,
+// for multi-line changes it shows a count.
+func scriptDiffSummary(old, new string) string {
+	oldLines := strings.Split(old, "\n")
+	newLines := strings.Split(new, "\n")
+
+	// Collect changed lines (simple line-by-line comparison)
+	changed := 0
+	maxLen := len(oldLines)
+	if len(newLines) > maxLen {
+		maxLen = len(newLines)
+	}
+	for i := 0; i < maxLen; i++ {
+		var o, n string
+		if i < len(oldLines) {
+			o = oldLines[i]
+		}
+		if i < len(newLines) {
+			n = newLines[i]
+		}
+		if o != n {
+			changed++
+		}
+	}
+
+	if changed == 1 {
+		// Find the single changed line and show it
+		for i := 0; i < maxLen; i++ {
+			var o, n string
+			if i < len(oldLines) {
+				o = oldLines[i]
+			}
+			if i < len(newLines) {
+				n = newLines[i]
+			}
+			if o != n {
+				if o == "" {
+					return fmt.Sprintf("+L%d", i+1)
+				}
+				if n == "" {
+					return fmt.Sprintf("-L%d", i+1)
+				}
+				return fmt.Sprintf("~L%d", i+1)
+			}
+		}
+	}
+
+	return fmt.Sprintf("%d lines differ", changed)
+}
 
 // normalizeScript normalizes a script for comparison: trims whitespace and
 // converts \r\n to \n so line-ending differences don't cause false positives.
