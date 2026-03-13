@@ -123,7 +123,7 @@ type Team struct {
 	Policies              []Policy
 	Queries               []Query
 	Profiles              []Profile // populated by GetProfiles
-	Scripts               []Script  // populated by GetScripts
+	Scripts               []Script  `json:"-"` // populated by GetScripts
 	SoftwareTitles        []SoftwareTitle
 	SoftwareUnavailable   bool // true when GetSoftware returned 403/404 (token lacks permission)
 	ProfilesUnavailable   bool // true when GetProfiles returned 403/404 (token lacks permission)
