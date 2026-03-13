@@ -123,9 +123,11 @@ type Team struct {
 	Policies              []Policy
 	Queries               []Query
 	Profiles              []Profile // populated by GetProfiles
+	Scripts               []Script  // populated by GetScripts
 	SoftwareTitles        []SoftwareTitle
 	SoftwareUnavailable   bool // true when GetSoftware returned 403/404 (token lacks permission)
 	ProfilesUnavailable   bool // true when GetProfiles returned 403/404 (token lacks permission)
+	ScriptsUnavailable    bool // true when GetScripts returned 403/404 (token lacks permission)
 }
 
 // TeamSoftware mirrors /api/v1/fleet/teams[].software for managed software
@@ -254,6 +256,13 @@ type Profile struct {
 	Platform    string `json:"platform"`
 }
 
+// Script represents a Fleet script assigned to a team.
+type Script struct {
+	ID     uint   `json:"id"`
+	Name   string `json:"name"`
+	TeamID uint   `json:"team_id"`
+}
+
 // ---------- API response wrappers ----------
 
 type teamsResponse struct {
@@ -281,6 +290,13 @@ type labelsResponse struct {
 
 type profilesResponse struct {
 	Profiles []Profile `json:"profiles"`
+}
+
+type scriptsResponse struct {
+	Scripts []Script `json:"scripts"`
+	Meta    struct {
+		HasNextResults bool `json:"has_next_results"`
+	} `json:"meta"`
 }
 
 type fleetMaintainedAppsResponse struct {
@@ -521,6 +537,34 @@ func (c *Client) GetProfiles(ctx context.Context, teamID uint) ([]Profile, error
 	return resp.Profiles, nil
 }
 
+// GetScripts fetches scripts for a team with pagination.
+func (c *Client) GetScripts(ctx context.Context, teamID uint) ([]Script, error) {
+	var all []Script
+	page := 0
+	for {
+		q := url.Values{
+			"per_page": {"250"},
+			"page":     {strconv.Itoa(page)},
+		}
+		if teamID > 0 {
+			q.Set("team_id", strconv.FormatUint(uint64(teamID), 10))
+		}
+		var resp scriptsResponse
+		if err := c.get(ctx, "/api/v1/fleet/scripts", q, &resp); err != nil {
+			return nil, fmt.Errorf("fetching scripts (team %d): %w", teamID, err)
+		}
+		all = append(all, resp.Scripts...)
+		if !resp.Meta.HasNextResults || len(resp.Scripts) == 0 {
+			break
+		}
+		page++
+		if page > 100 { // safety: max 25k scripts
+			break
+		}
+	}
+	return all, nil
+}
+
 // FetchAll concurrently fetches the complete Fleet state. Uses errgroup for
 // parallel requests. If fetchGlobal is true, also fetches global config,
 // policies, and queries (for default.yml diffing).
@@ -627,6 +671,19 @@ func (c *Client) FetchAll(ctx context.Context, fetchGlobal ...bool) (*FleetState
 				softwareTitles = nil
 			}
 			teamResults[idx].SoftwareTitles = softwareTitles
+			return nil
+		})
+
+		g.Go(func() error {
+			scripts, err := c.GetScripts(gctx, teamID)
+			if err != nil {
+				if !isPermissionError(err) {
+					return err
+				}
+				teamResults[idx].ScriptsUnavailable = true
+				scripts = nil
+			}
+			teamResults[idx].Scripts = scripts
 			return nil
 		})
 	}

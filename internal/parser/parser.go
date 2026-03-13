@@ -103,7 +103,15 @@ type ParsedTeam struct {
 	Queries    []ParsedQuery
 	Software   ParsedSoftware
 	Profiles   []ParsedProfile
+	Scripts    []ParsedScript
 	SourceFile string
+}
+
+// ParsedScript represents a script under controls.scripts.
+type ParsedScript struct {
+	Name       string // filename extracted from path (e.g., "foo.ps1")
+	Path       string // resolved absolute path
+	SourceFile string // team YAML that referenced it
 }
 
 // ParsedPolicy represents a policy from YAML.
@@ -245,7 +253,8 @@ type rawSoftwarePackage struct {
 }
 
 type rawControls struct {
-	MacOSSettings struct {
+	Scripts         []rawPathRef `yaml:"scripts"`
+	MacOSSettings   struct {
 		CustomSettings []rawProfileRef `yaml:"custom_settings"`
 	} `yaml:"macos_settings"`
 	WindowsSettings struct {
@@ -420,6 +429,23 @@ func parseTeamFile(path string) (*ParsedTeam, []ParseError) {
 		team.Software.FleetMaintained = append(team.Software.FleetMaintained, fma)
 	}
 	team.Software.AppStoreApps = raw.Software.AppStoreApps
+
+	// Resolve script paths from controls.scripts[].path.
+	// Fleet identifies scripts by filename, which is what the API returns.
+	for _, ref := range raw.Controls.Scripts {
+		resolved := filepath.Join(dir, ref.Path)
+		if repoRoot != "" {
+			if err := safePath(repoRoot, resolved); err != nil {
+				errs = append(errs, ParseError{File: path, Message: err.Error()})
+				continue
+			}
+		}
+		team.Scripts = append(team.Scripts, ParsedScript{
+			Name:       filepath.Base(resolved),
+			Path:       resolved,
+			SourceFile: path,
+		})
+	}
 
 	// Resolve profile paths and extract names from file content.
 	// Fleet identifies profiles by the name embedded in the file (e.g.,

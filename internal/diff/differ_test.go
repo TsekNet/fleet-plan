@@ -66,6 +66,10 @@ func TestDiffTestdataAgainstMockAPI(t *testing.T) {
 				Profiles: []api.Profile{
 					{Name: "fleet_orbit-allowfulldiskaccess"},
 				},
+				Scripts: []api.Script{
+					{ID: 1, Name: "enable-desktop.ps1", TeamID: 1},
+					{ID: 2, Name: "old-script.sh", TeamID: 1},
+				},
 			},
 			{
 				ID:   2,
@@ -149,6 +153,21 @@ func TestDiffTestdataAgainstMockAPI(t *testing.T) {
 	if !ws.Profiles.IsEmpty() {
 		t.Errorf("Workstations: expected no profile changes (name matches PayloadDisplayName), got added=%d modified=%d deleted=%d",
 			len(ws.Profiles.Added), len(ws.Profiles.Modified), len(ws.Profiles.Deleted))
+	}
+
+	// Scripts: disk-cleanup.sh is new (added), enable-desktop.ps1 exists (no change), old-script.sh deleted
+	if len(ws.Scripts.Added) != 1 {
+		t.Errorf("Workstations: expected 1 added script, got %d", len(ws.Scripts.Added))
+	} else if ws.Scripts.Added[0].Name != "disk-cleanup.sh" {
+		t.Errorf("Workstations: added script name: got %q", ws.Scripts.Added[0].Name)
+	}
+	if len(ws.Scripts.Deleted) != 1 {
+		t.Errorf("Workstations: expected 1 deleted script, got %d", len(ws.Scripts.Deleted))
+	} else if ws.Scripts.Deleted[0].Name != "old-script.sh" {
+		t.Errorf("Workstations: deleted script name: got %q", ws.Scripts.Deleted[0].Name)
+	}
+	if len(ws.Scripts.Modified) != 0 {
+		t.Errorf("Workstations: expected 0 modified scripts, got %d", len(ws.Scripts.Modified))
 	}
 
 	// Labels: macOS 14+ valid, Ubuntu 24.04 missing
@@ -1571,6 +1590,86 @@ func TestDiffChangedFileFilterYAMLStillWorks(t *testing.T) {
 	r := results[0]
 	if len(r.Software.Modified) != 1 {
 		t.Fatalf("expected 1 modified (YAML match), got %d", len(r.Software.Modified))
+	}
+}
+
+// TestDiffScriptScenarios verifies add, delete, and no-change for scripts.
+func TestDiffScriptScenarios(t *testing.T) {
+	current := &api.FleetState{
+		Teams: []api.Team{{
+			ID:   1,
+			Name: "T",
+			Scripts: []api.Script{
+				{ID: 1, Name: "existing.ps1"},
+				{ID: 2, Name: "to-delete.sh"},
+			},
+		}},
+	}
+
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{{
+			Name: "T",
+			Scripts: []parser.ParsedScript{
+				{Name: "existing.ps1", Path: "/repo/scripts/existing.ps1", SourceFile: "/repo/teams/t.yml"},
+				{Name: "new-script.py", Path: "/repo/scripts/new-script.py", SourceFile: "/repo/teams/t.yml"},
+			},
+		}},
+	}
+
+	results := Diff(current, proposed, nil, nil)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+
+	if len(r.Scripts.Added) != 1 {
+		t.Fatalf("expected 1 added script, got %d", len(r.Scripts.Added))
+	}
+	if r.Scripts.Added[0].Name != "new-script.py" {
+		t.Errorf("added script name: got %q", r.Scripts.Added[0].Name)
+	}
+
+	if len(r.Scripts.Deleted) != 1 {
+		t.Fatalf("expected 1 deleted script, got %d", len(r.Scripts.Deleted))
+	}
+	if r.Scripts.Deleted[0].Name != "to-delete.sh" {
+		t.Errorf("deleted script name: got %q", r.Scripts.Deleted[0].Name)
+	}
+
+	if len(r.Scripts.Modified) != 0 {
+		t.Errorf("expected 0 modified scripts, got %d", len(r.Scripts.Modified))
+	}
+}
+
+// TestDiffScriptChangedFileFilter verifies that the changed-file filter
+// includes scripts whose SourceFile matches a changed file.
+func TestDiffScriptChangedFileFilter(t *testing.T) {
+	current := &api.FleetState{
+		Teams: []api.Team{{
+			ID:   1,
+			Name: "T",
+		}},
+	}
+
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{{
+			Name: "T",
+			Scripts: []parser.ParsedScript{
+				{Name: "included.ps1", Path: "/repo/scripts/included.ps1", SourceFile: "/repo/teams/t.yml"},
+				{Name: "excluded.sh", Path: "/repo/scripts/excluded.sh", SourceFile: "/repo/teams/other.yml"},
+			},
+		}},
+	}
+
+	results := Diff(current, proposed, nil, []string{"teams/t.yml"})
+	r := results[0]
+
+	// included.ps1 should appear (its SourceFile matches the changed file)
+	if len(r.Scripts.Added) != 1 {
+		t.Fatalf("expected 1 added script (filtered), got %d", len(r.Scripts.Added))
+	}
+	if r.Scripts.Added[0].Name != "included.ps1" {
+		t.Errorf("added script name: got %q, want included.ps1", r.Scripts.Added[0].Name)
 	}
 }
 

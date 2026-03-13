@@ -16,6 +16,9 @@ queries:
   - path: ../queries/shared/uptime.yml
   - path: ../queries/shared/os-version.yml
 controls:
+  scripts:
+    - path: ../scripts/enable-desktop.ps1
+    - path: ../scripts/disk-cleanup.sh
   macos_settings:
     custom_settings:
       - path: ../profiles/mac/renamed-fulldisk.mobileconfig

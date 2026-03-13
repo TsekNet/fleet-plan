@@ -27,6 +27,7 @@ type DiffResult struct {
 	Queries              ResourceDiff
 	Software             ResourceDiff
 	Profiles             ResourceDiff
+	Scripts              ResourceDiff
 	Labels               LabelValidation
 	Config               []ConfigChange // org_settings, agent_options, controls diffs
 	Errors               []string
@@ -219,6 +220,12 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 				result.Profiles, profileWarnings = diffProfiles(currentTeam.Profiles, proposedTeam.Profiles)
 				result.Errors = append(result.Errors, profileWarnings...)
 			}
+
+			if currentTeam.ScriptsUnavailable {
+				result.Errors = append(result.Errors, "scripts diff skipped: API token lacks permission to read scripts")
+			} else {
+				result.Scripts = diffScripts(currentTeam.Scripts, proposedTeam.Scripts)
+			}
 		}
 
 		if len(changedFiles) > 0 {
@@ -227,6 +234,7 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 			result.Queries = filterResourceDiff(result.Queries, sourceNames, changedFiles)
 			result.Software = filterResourceDiff(result.Software, sourceNames, changedFiles)
 			result.Profiles = filterResourceDiff(result.Profiles, sourceNames, changedFiles)
+			result.Scripts = filterResourceDiff(result.Scripts, sourceNames, changedFiles)
 		}
 
 		result.Labels = validateLabels(proposedTeam, labelMap, changedNames(result.Policies))
@@ -277,6 +285,9 @@ func buildSourceMap(team parser.ParsedTeam) map[string][]string {
 	}
 	for _, p := range team.Profiles {
 		add(p.Name, p.SourceFile)
+	}
+	for _, s := range team.Scripts {
+		add(s.Name, s.SourceFile)
 	}
 	return m
 }
@@ -888,6 +899,36 @@ func diffProfiles(current []api.Profile, proposed []parser.ParsedProfile) (Resou
 	}
 
 	return diff, warnings
+}
+
+// diffScripts compares current scripts (from API) against proposed scripts
+// (from YAML). Scripts are matched by filename.
+func diffScripts(current []api.Script, proposed []parser.ParsedScript) ResourceDiff {
+	var diff ResourceDiff
+
+	currentMap := make(map[string]api.Script)
+	for _, s := range current {
+		currentMap[s.Name] = s
+	}
+
+	proposedNames := make(map[string]bool)
+	for _, s := range proposed {
+		proposedNames[s.Name] = true
+		if _, exists := currentMap[s.Name]; !exists {
+			diff.Added = append(diff.Added, ResourceChange{
+				Name:   s.Name,
+				Fields: map[string]FieldDiff{"path": {New: s.Path}},
+			})
+		}
+	}
+
+	for _, cur := range current {
+		if !proposedNames[cur.Name] {
+			diff.Deleted = append(diff.Deleted, ResourceChange{Name: cur.Name})
+		}
+	}
+
+	return diff
 }
 
 // ---------- Label validation ----------
