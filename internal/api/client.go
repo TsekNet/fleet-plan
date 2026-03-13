@@ -566,8 +566,9 @@ func (c *Client) GetScripts(ctx context.Context, teamID uint) ([]Script, error) 
 	return all, nil
 }
 
-// EnrichScriptContents fetches the content for each script by ID and populates
-// the Content field. Errors are non-fatal (content stays empty).
+// EnrichScriptContents fetches the content for each script by ID using the
+// download endpoint (?alt=media) and populates the Content field.
+// Errors are non-fatal (content stays empty).
 func (c *Client) EnrichScriptContents(ctx context.Context, scripts []Script) {
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(5)
@@ -577,19 +578,41 @@ func (c *Client) EnrichScriptContents(ctx context.Context, scripts []Script) {
 		}
 		idx := i
 		g.Go(func() error {
-			var resp struct {
-				Script struct {
-					ScriptContents string `json:"script_contents"`
-				} `json:"script"`
-			}
-			if err := c.get(gctx, fmt.Sprintf("/api/v1/fleet/scripts/%d", scripts[idx].ID), nil, &resp); err != nil {
+			content, err := c.getScriptContent(gctx, scripts[idx].ID)
+			if err != nil {
 				return nil // non-fatal
 			}
-			scripts[idx].Content = strings.TrimSpace(resp.Script.ScriptContents)
+			scripts[idx].Content = strings.TrimSpace(content)
 			return nil
 		})
 	}
 	g.Wait()
+}
+
+// getScriptContent downloads script content via GET /api/v1/fleet/scripts/:id?alt=media.
+func (c *Client) getScriptContent(ctx context.Context, scriptID uint) (string, error) {
+	u := fmt.Sprintf("%s/api/v1/fleet/scripts/%d?alt=media", c.baseURL, scriptID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("HTTP %d fetching script %d", resp.StatusCode, scriptID)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB limit
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
 }
 
 // FetchAll concurrently fetches the complete Fleet state. Uses errgroup for
