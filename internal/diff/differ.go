@@ -559,21 +559,22 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) Reso
 					New: fmt.Sprint(a.SelfService),
 				}
 			}
-			if cur.InstallScript != "" && a.InstallScript != "" &&
-				normalizeWS(cur.InstallScript) != normalizeWS(a.InstallScript) {
-				fields["install_script"] = FieldDiff{Old: cur.InstallScript, New: a.InstallScript}
-			}
-			if cur.UninstallScript != "" && a.UninstallScript != "" &&
-				normalizeWS(cur.UninstallScript) != normalizeWS(a.UninstallScript) {
-				fields["uninstall_script"] = FieldDiff{Old: cur.UninstallScript, New: a.UninstallScript}
-			}
-			if cur.PreInstallQuery != "" && a.PreInstallQuery != "" &&
-				normalizeWS(cur.PreInstallQuery) != normalizeWS(a.PreInstallQuery) {
-				fields["pre_install_query"] = FieldDiff{Old: cur.PreInstallQuery, New: a.PreInstallQuery}
-			}
-			if cur.PostInstallScript != "" && a.PostInstallScript != "" &&
-				normalizeWS(cur.PostInstallScript) != normalizeWS(a.PostInstallScript) {
-				fields["post_install_script"] = FieldDiff{Old: cur.PostInstallScript, New: a.PostInstallScript}
+			for _, sc := range []struct {
+				name     string
+				curVal   string
+				newVal   string
+			}{
+				{"install_script", cur.InstallScript, a.InstallScript},
+				{"uninstall_script", cur.UninstallScript, a.UninstallScript},
+				{"pre_install_query", cur.PreInstallQuery, a.PreInstallQuery},
+				{"post_install_script", cur.PostInstallScript, a.PostInstallScript},
+			} {
+				if sc.curVal != "" && sc.newVal != "" &&
+					normalizeScript(sc.curVal) != normalizeScript(sc.newVal) {
+					fields[sc.name] = FieldDiff{
+						New: scriptDiffSummary(normalizeScript(sc.curVal), normalizeScript(sc.newVal)),
+					}
+				}
 			}
 			if len(fields) > 0 {
 				rd.Modified = append(rd.Modified, ResourceChange{
@@ -927,10 +928,9 @@ func diffScripts(current []api.Script, proposed []parser.ParsedScript) ResourceD
 		// Normalize line endings (\r\n → \n) and trim before comparing.
 		if cur.Content != "" && s.Content != "" &&
 			normalizeScript(cur.Content) != normalizeScript(s.Content) {
-			detail := scriptDiffSummary(normalizeScript(cur.Content), normalizeScript(s.Content))
 			diff.Modified = append(diff.Modified, ResourceChange{
-				Name:   s.Name,
-				Fields: map[string]FieldDiff{"content": {Old: detail, New: detail}},
+				Name:    s.Name,
+				Warning: scriptDiffSummary(normalizeScript(cur.Content), normalizeScript(s.Content)),
 			})
 		}
 	}
@@ -1205,33 +1205,42 @@ func getNestedValue(m map[string]any, key string) string {
 // ---------- Helpers ----------
 
 // scriptDiffSummary returns a human-readable summary of what changed between
-// two normalized script contents. For single-line changes it shows the line,
-// for multi-line changes it shows a count.
+// two normalized script contents. For single-line changes it shows the line
+// number. For multi-line changes it shows insertion/deletion counts.
 func scriptDiffSummary(old, new string) string {
 	oldLines := strings.Split(old, "\n")
 	newLines := strings.Split(new, "\n")
 
-	// Collect changed lines (simple line-by-line comparison)
-	changed := 0
-	maxLen := len(oldLines)
-	if len(newLines) > maxLen {
-		maxLen = len(newLines)
+	// Build a set of old lines for membership check
+	oldSet := make(map[string]int)
+	for _, l := range oldLines {
+		oldSet[l]++
 	}
-	for i := 0; i < maxLen; i++ {
-		var o, n string
-		if i < len(oldLines) {
-			o = oldLines[i]
+	newSet := make(map[string]int)
+	for _, l := range newLines {
+		newSet[l]++
+	}
+
+	// Count insertions (lines in new but not in old) and deletions (lines in old but not in new)
+	inserted := 0
+	for l, count := range newSet {
+		if diff := count - oldSet[l]; diff > 0 {
+			inserted += diff
 		}
-		if i < len(newLines) {
-			n = newLines[i]
-		}
-		if o != n {
-			changed++
+	}
+	deleted := 0
+	for l, count := range oldSet {
+		if diff := count - newSet[l]; diff > 0 {
+			deleted += diff
 		}
 	}
 
-	if changed == 1 {
-		// Find the single changed line and show it
+	if inserted+deleted == 1 {
+		// Find the single changed line and show its position
+		maxLen := len(oldLines)
+		if len(newLines) > maxLen {
+			maxLen = len(newLines)
+		}
 		for i := 0; i < maxLen; i++ {
 			var o, n string
 			if i < len(oldLines) {
@@ -1252,7 +1261,7 @@ func scriptDiffSummary(old, new string) string {
 		}
 	}
 
-	return fmt.Sprintf("%d lines differ", changed)
+	return fmt.Sprintf("+%d lines, -%d lines", inserted, deleted)
 }
 
 // normalizeScript normalizes a script for comparison: trims whitespace and

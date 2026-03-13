@@ -110,7 +110,11 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 				totalAdded++
 			}
 			for _, c := range rt.rd.Modified {
-				rows = append(rows, row{"MODIFIED", team, rt.name, c.Name, mdFieldDetails(c.Fields)})
+				det := mdFieldDetails(c.Fields)
+				if det == "" && c.Warning != "" {
+					det = c.Warning
+				}
+				rows = append(rows, row{"MODIFIED", team, rt.name, c.Name, det})
 				totalModified++
 			}
 			for _, c := range rt.rd.Deleted {

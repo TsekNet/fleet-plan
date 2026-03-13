@@ -194,7 +194,11 @@ func renderChangeList(items []diff.ResourceChange, changeType string, color lipg
 			}
 
 		case "modified":
-			lines = append(lines, color.Render(prefix+c.Name))
+			line := color.Render(prefix + c.Name)
+			if len(c.Fields) == 0 && c.Warning != "" {
+				line += dim.Render(" (" + c.Warning + ")")
+			}
+			lines = append(lines, line)
 			lines = append(lines, renderFieldLines(c.Fields, verbose, true)...)
 
 		case "deleted":
