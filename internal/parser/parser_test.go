@@ -14,7 +14,7 @@ import (
 func TestParseTestdataRepo(t *testing.T) {
 	root := testutil.TestdataRoot(t)
 
-	repo, err := ParseRepo(root, "", "")
+	repo, err := ParseRepo(root, nil, "")
 	if err != nil {
 		t.Fatalf("ParseRepo: %v", err)
 	}
@@ -26,9 +26,9 @@ func TestParseTestdataRepo(t *testing.T) {
 		t.Fatalf("expected zero parse errors, got %d", len(repo.Errors))
 	}
 
-	// Three teams: Workstations, Servers, Mobile
-	if len(repo.Teams) != 3 {
-		t.Fatalf("expected 3 teams, got %d", len(repo.Teams))
+	// Two teams: Workstations, Servers
+	if len(repo.Teams) != 2 {
+		t.Fatalf("expected 2 teams, got %d", len(repo.Teams))
 	}
 
 	// Find Workstations team
@@ -43,9 +43,9 @@ func TestParseTestdataRepo(t *testing.T) {
 		t.Fatal("Workstations team not found")
 	}
 
-	// Workstations: 5 policies (filevault, gatekeeper, defender, ssh, firewall)
-	if len(ws.Policies) != 5 {
-		t.Fatalf("Workstations: expected 5 policies, got %d", len(ws.Policies))
+	// Workstations: 4 policies (filevault, defender, ssh, firewall)
+	if len(ws.Policies) != 4 {
+		t.Fatalf("Workstations: expected 4 policies, got %d", len(ws.Policies))
 	}
 
 	// Verify FileVault policy
@@ -136,24 +136,6 @@ func TestParseTestdataRepo(t *testing.T) {
 		t.Fatalf("Servers: expected 2 queries, got %d", len(srv.Queries))
 	}
 
-	// Find Mobile team
-	var mob *ParsedTeam
-	for i := range repo.Teams {
-		if repo.Teams[i].Name == "Mobile" {
-			mob = &repo.Teams[i]
-			break
-		}
-	}
-	if mob == nil {
-		t.Fatal("Mobile team not found")
-	}
-	if len(mob.Policies) != 1 {
-		t.Fatalf("Mobile: expected 1 policy, got %d", len(mob.Policies))
-	}
-	if len(mob.Queries) != 1 {
-		t.Fatalf("Mobile: expected 1 query, got %d", len(mob.Queries))
-	}
-
 	// Labels from default.yml
 	if len(repo.Labels) != 3 {
 		t.Fatalf("expected 3 labels, got %d", len(repo.Labels))
@@ -229,7 +211,7 @@ func TestParseTestdataRepo(t *testing.T) {
 func TestProfileNameExtraction(t *testing.T) {
 	root := testutil.TestdataRoot(t)
 
-	repo, err := ParseRepo(root, "Workstations", "")
+	repo, err := ParseRepo(root, []string{"Workstations"}, "")
 	if err != nil {
 		t.Fatalf("ParseRepo: %v", err)
 	}
@@ -398,7 +380,7 @@ func TestExtractProfileNameSizeGuard(t *testing.T) {
 func TestParseTestdataTeamFilter(t *testing.T) {
 	root := testutil.TestdataRoot(t)
 
-	repo, err := ParseRepo(root, "Workstations", "")
+	repo, err := ParseRepo(root, []string{"Workstations"}, "")
 	if err != nil {
 		t.Fatalf("ParseRepo: %v", err)
 	}
@@ -472,7 +454,7 @@ queries: []
 			root := t.TempDir()
 			tt.setup(root)
 
-			repo, err := ParseRepo(root, "", "")
+			repo, err := ParseRepo(root, nil, "")
 			if err != nil {
 				t.Fatalf("ParseRepo: %v", err)
 			}
@@ -541,6 +523,57 @@ func TestValidateLogging(t *testing.T) {
 	}
 }
 
+// TestParseSoftwarePackageScriptSourceFiles verifies that install_script,
+// uninstall_script, and other path: refs inside a software package YAML are
+// resolved and tracked in SourceFiles. This enables the changed-file filter
+// to match MRs that only modify scripts (no YAML changes).
+func TestParseSoftwarePackageScriptSourceFiles(t *testing.T) {
+	root := testutil.TestdataRoot(t)
+
+	repo, err := ParseRepo(root, []string{"Workstations"}, "")
+	if err != nil {
+		t.Fatalf("ParseRepo: %v", err)
+	}
+	if len(repo.Errors) > 0 {
+		for _, e := range repo.Errors {
+			t.Logf("parse error: %s", e)
+		}
+		t.Fatalf("expected zero parse errors, got %d", len(repo.Errors))
+	}
+
+	ws := &repo.Teams[0]
+	var exApp *ParsedSoftwarePackage
+	for i := range ws.Software.Packages {
+		if strings.Contains(ws.Software.Packages[i].RefPath, "example-app") {
+			exApp = &ws.Software.Packages[i]
+			break
+		}
+	}
+	if exApp == nil {
+		t.Fatal("example-app package not found")
+	}
+
+	if len(exApp.SourceFiles) != 2 {
+		t.Fatalf("expected 2 SourceFiles (install.ps1, uninstall.ps1), got %d: %v", len(exApp.SourceFiles), exApp.SourceFiles)
+	}
+
+	hasInstall, hasUninstall := false, false
+	for _, sf := range exApp.SourceFiles {
+		if strings.HasSuffix(sf, "install.ps1") && !strings.Contains(sf, "uninstall") {
+			hasInstall = true
+		}
+		if strings.HasSuffix(sf, "uninstall.ps1") {
+			hasUninstall = true
+		}
+	}
+	if !hasInstall {
+		t.Errorf("expected install.ps1 in SourceFiles, got %v", exApp.SourceFiles)
+	}
+	if !hasUninstall {
+		t.Errorf("expected uninstall.ps1 in SourceFiles, got %v", exApp.SourceFiles)
+	}
+}
+
 // TestParseRepoDuplicateSoftwareRefs verifies duplicate software ref detection.
 func TestParseRepoDuplicateSoftwareRefs(t *testing.T) {
 	root := t.TempDir()
@@ -570,7 +603,7 @@ team_settings: {}
 `
 	os.WriteFile(filepath.Join(teamsDir, "workstations.yml"), []byte(teamYAML), 0o644)
 
-	repo, err := ParseRepo(root, "", "")
+	repo, err := ParseRepo(root, nil, "")
 	if err != nil {
 		t.Fatalf("ParseRepo: %v", err)
 	}

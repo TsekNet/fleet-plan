@@ -8,7 +8,6 @@ agent_options:
       distributed_interval: 10
 policies:
   - path: ../policies/mac/macos-filevault-enabled.yml
-  - path: ../policies/mac/macos-gatekeeper-enabled.yml
   - path: ../policies/windows/windows-defender-realtime.yml
   - path: ../policies/linux/linux-ssh-root-disabled.yml
   - path: ../policies/linux/linux-firewall-enabled.yml
@@ -24,4 +23,11 @@ software:
   packages:
     - path: ../software/mac/slack/slack.yml
     - path: ../software/windows/example-app/example-app.yml
+      self_service: true
+  fleet_maintained_apps:
+    - slug: cursor/windows
+      install_script:
+        path: ../software/windows/cursor/install.ps1
+      uninstall_script:
+        path: ../software/windows/cursor/uninstall.ps1
       self_service: true

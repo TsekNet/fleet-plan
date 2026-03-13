@@ -1,7 +1,0 @@
-- name: "[macOS] Gatekeeper Enabled"
-  description: Verifies that macOS Gatekeeper is enabled to prevent unsigned apps.
-  resolution: |
-    Run: sudo spctl --master-enable
-  query: "SELECT 1 FROM gatekeeper WHERE assessments_enabled = 1;"
-  platform: darwin
-  critical: false

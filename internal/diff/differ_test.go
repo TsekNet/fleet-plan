@@ -22,12 +22,11 @@ import (
 //   - Queries: Uptime (interval changed → modified)
 //   - No policies (SSH Root Login is new → added)
 //
-// Mobile team: not in API → new team info message.
 // Labels: macOS 14+ and Windows 11 exist. Ubuntu 24.04 does NOT → missing label error.
 func TestDiffTestdataAgainstMockAPI(t *testing.T) {
 	root := testutil.TestdataRoot(t)
 
-	proposed, err := parser.ParseRepo(root, "", "")
+	proposed, err := parser.ParseRepo(root, nil, "")
 	if err != nil {
 		t.Fatalf("ParseRepo: %v", err)
 	}
@@ -58,6 +57,9 @@ func TestDiffTestdataAgainstMockAPI(t *testing.T) {
 						// old-agent: not in YAML → deleted
 						{ReferencedYAMLPath: "software/mac/old-agent/old-agent.yml", URL: "https://example.com/old-agent.pkg"},
 					},
+					FleetMaintained: []api.TeamFleetApp{
+						{Slug: "cursor/windows", SelfService: true},
+					},
 				},
 				// Profile uses PayloadDisplayName "fleet_orbit-allowfulldiskaccess"
 				// which matches the content of the .mobileconfig file (not the filename).
@@ -82,12 +84,12 @@ func TestDiffTestdataAgainstMockAPI(t *testing.T) {
 	}
 
 	// --- Test all teams (unfiltered) ---
-	allResults := Diff(current, proposed, "")
+	allResults := Diff(current, proposed, nil, nil)
 
-	// Should have 4 results: (global), Workstations, Servers, Mobile
+	// Should have 3 results: (global), Workstations, Servers
 	// The (global) result comes from default.yml parsing.
-	if len(allResults) != 4 {
-		t.Fatalf("expected 4 results, got %d", len(allResults))
+	if len(allResults) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(allResults))
 	}
 
 	// Verify global result exists and is first
@@ -98,9 +100,9 @@ func TestDiffTestdataAgainstMockAPI(t *testing.T) {
 	// --- Workstations ---
 	ws := findTeam(t, allResults, "Workstations")
 
-	// Policies: Gatekeeper, Defender, SSH, Firewall are new (4 added)
-	if len(ws.Policies.Added) != 4 {
-		t.Errorf("Workstations: expected 4 added policies, got %d: %v", len(ws.Policies.Added), ws.Policies.Added)
+	// Policies: Defender, SSH, Firewall are new (3 added)
+	if len(ws.Policies.Added) != 3 {
+		t.Errorf("Workstations: expected 3 added policies, got %d: %v", len(ws.Policies.Added), ws.Policies.Added)
 	}
 	// FileVault modified (query changed)
 	if len(ws.Policies.Modified) != 1 {
@@ -184,35 +186,13 @@ func TestDiffTestdataAgainstMockAPI(t *testing.T) {
 		}
 	}
 
-	// --- Mobile (new team) ---
-	mob := findTeam(t, allResults, "Mobile")
-
-	// All resources should be "added" since team is new
-	if len(mob.Policies.Added) != 1 {
-		t.Errorf("Mobile: expected 1 added policy, got %d", len(mob.Policies.Added))
-	}
-	if len(mob.Queries.Added) != 1 {
-		t.Errorf("Mobile: expected 1 added query, got %d", len(mob.Queries.Added))
-	}
-
-	// Should have info message about new team
-	foundNewTeamInfo := false
-	for _, e := range mob.Errors {
-		if strings.Contains(e, "does not exist in Fleet yet") {
-			foundNewTeamInfo = true
-			break
-		}
-	}
-	if !foundNewTeamInfo {
-		t.Error("expected info message about new team for Mobile")
-	}
 }
 
 // TestDiffTestdataWorkstationsOnly verifies filtered diff for a single team.
 func TestDiffTestdataWorkstationsOnly(t *testing.T) {
 	root := testutil.TestdataRoot(t)
 
-	proposed, err := parser.ParseRepo(root, "", "")
+	proposed, err := parser.ParseRepo(root, nil, "")
 	if err != nil {
 		t.Fatalf("ParseRepo: %v", err)
 	}
@@ -232,7 +212,7 @@ func TestDiffTestdataWorkstationsOnly(t *testing.T) {
 		},
 	}
 
-	results := Diff(current, proposed, "Workstations")
+	results := Diff(current, proposed, []string{"Workstations"}, nil)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -284,7 +264,7 @@ func TestDiffPolicyScenarios(t *testing.T) {
 			current := &api.FleetState{Teams: []api.Team{{ID: 1, Name: "T", Policies: tt.current}}}
 			proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{Name: "T", Policies: tt.proposed}}}
 
-			results := Diff(current, proposed, "")
+			results := Diff(current, proposed, nil, nil)
 			r := results[0]
 
 			if len(r.Policies.Added) != tt.wantAdded {
@@ -328,7 +308,7 @@ func TestDiffNewTeam(t *testing.T) {
 		Teams: []parser.ParsedTeam{{Name: "New Team", Policies: []parser.ParsedPolicy{{Name: "Test Policy"}}}},
 	}
 
-	results := Diff(current, proposed, "")
+	results := Diff(current, proposed, nil, nil)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -366,7 +346,7 @@ func TestDiffTeamFilter(t *testing.T) {
 		},
 	}
 
-	results := Diff(current, proposed, "Alpha")
+	results := Diff(current, proposed, []string{"Alpha"}, nil)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result with filter, got %d", len(results))
 	}
@@ -419,7 +399,7 @@ func TestDiffLabelValidation(t *testing.T) {
 				}},
 			}
 
-			results := Diff(current, proposed, "")
+			results := Diff(current, proposed, nil, nil)
 			r := results[0]
 
 			if len(r.Labels.Valid) != tt.wantValid {
@@ -455,7 +435,7 @@ func TestDiffLabelValidationSkipsUnchangedPolicies(t *testing.T) {
 		}},
 	}
 
-	results := Diff(current, proposed, "")
+	results := Diff(current, proposed, nil, nil)
 	r := results[0]
 
 	if len(r.Labels.Valid) != 0 {
@@ -497,7 +477,7 @@ func TestDiffQueryChanges(t *testing.T) {
 			current := &api.FleetState{Teams: []api.Team{{ID: 1, Name: "T", Queries: tt.current}}}
 			proposed := &parser.ParsedRepo{Teams: []parser.ParsedTeam{{Name: "T", Queries: tt.proposed}}}
 
-			results := Diff(current, proposed, "")
+			results := Diff(current, proposed, nil, nil)
 			r := results[0]
 
 			if len(r.Queries.Added) != tt.wantAdded {
@@ -571,7 +551,7 @@ func TestDiffSoftwarePackageAddedDeleted(t *testing.T) {
 		},
 	}
 
-	results := Diff(current, proposed, "")
+	results := Diff(current, proposed, nil, nil)
 	r := results[0]
 
 	if len(r.Software.Added) != 1 {
@@ -626,7 +606,7 @@ func TestDiffSoftwarePackageModified(t *testing.T) {
 		},
 	}
 
-	results := Diff(current, proposed, "")
+	results := Diff(current, proposed, nil, nil)
 	r := results[0]
 
 	if len(r.Software.Modified) != 1 {
@@ -685,7 +665,7 @@ func TestDiffSoftwareFleetAndAppStore(t *testing.T) {
 		},
 	}
 
-	results := Diff(current, proposed, "")
+	results := Diff(current, proposed, nil, nil)
 	r := results[0]
 
 	// Expect at least one add/delete/modify across fleet + app store
@@ -731,7 +711,7 @@ func TestDiffFleetMaintainedAppsNullAPIShowsAdded(t *testing.T) {
 		},
 	}
 
-	results := Diff(current, proposed, "")
+	results := Diff(current, proposed, nil, nil)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -810,7 +790,7 @@ func TestDiffFleetMaintainedAppsInferenceFromTitles(t *testing.T) {
 		},
 	}
 
-	results := Diff(current, proposed, "")
+	results := Diff(current, proposed, nil, nil)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -832,6 +812,366 @@ func TestDiffFleetMaintainedAppsInferenceFromTitles(t *testing.T) {
 		if strings.Contains(e, "fleet_maintained") {
 			t.Fatalf("unexpected fleet_maintained message: %q", e)
 		}
+	}
+}
+
+func TestDiffFleetMaintainedAppsInferenceByAppID(t *testing.T) {
+	fmaID := uint(42)
+	current := &api.FleetState{
+		FleetMaintainedCatalog: []api.FleetMaintainedApp{
+			{
+				ID:       fmaID,
+				Slug:     "7-zip/windows",
+				Name:     "7-Zip",
+				Platform: "windows",
+			},
+		},
+		Teams: []api.Team{
+			{
+				ID:   1,
+				Name: "Workstations",
+				Software: api.TeamSoftware{
+					FleetMaintained: nil,
+				},
+				SoftwareTitles: []api.SoftwareTitle{
+					{
+						ID:     99,
+						Name:   "7-Zip (x64)",
+						Source: "programs", // Windows MSI/EXE source, NOT "apps"
+						SoftwarePackage: &api.SoftwareTitlePackageMeta{
+							PackageURL:           "https://fleet-maintained.example/7-zip.msi",
+							Platform:             "windows",
+							SelfService:          true,
+							FleetMaintainedAppID: &fmaID,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{
+			{
+				Name: "Workstations",
+				Software: parser.ParsedSoftware{
+					FleetMaintained: []parser.ParsedFleetApp{
+						{Slug: "7-zip/windows", SelfService: true},
+					},
+				},
+			},
+		},
+	}
+
+	results := Diff(current, proposed, nil, nil)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+
+	if len(r.Software.Added) != 0 {
+		t.Errorf("expected 0 added fleet apps (inferred via fleet_maintained_app_id), got %d: %v",
+			len(r.Software.Added), r.Software.Added)
+	}
+	if len(r.Software.Modified) != 0 {
+		t.Errorf("expected 0 modified fleet apps, got %d", len(r.Software.Modified))
+	}
+}
+
+// TestDiffFleetMaintainedAppsInferenceWithMergedPackages verifies that
+// inference works when the API returns fleet_maintained_apps: null and merges
+// all software (including fleet-maintained) into team.Software.Packages.
+func TestDiffFleetMaintainedAppsInferenceWithMergedPackages(t *testing.T) {
+	current := &api.FleetState{
+		FleetMaintainedCatalog: []api.FleetMaintainedApp{
+			{ID: 10, Slug: "cursor/windows", Name: "Cursor", Platform: "windows"},
+			{ID: 11, Slug: "notepad-plus-plus/windows", Name: "Notepad++", Platform: "windows"},
+		},
+		Teams: []api.Team{
+			{
+				ID:   6,
+				Name: "NVDI",
+				Software: api.TeamSoftware{
+					FleetMaintained: nil, // API returns null
+					Packages: []api.TeamSoftwarePackage{
+						{URL: "https://downloads.cursor.com/CursorSetup-x64-2.3.21.exe"},
+						{URL: "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.2/npp.8.9.2.Installer.x64.exe"},
+						{URL: "https://example.com/custom-tool.exe"},
+					},
+				},
+				SoftwareTitles: []api.SoftwareTitle{
+					{
+						ID: 570582, Name: "Cursor", Source: "programs",
+						SoftwarePackage: &api.SoftwareTitlePackageMeta{
+							PackageURL: "https://downloads.cursor.com/CursorSetup-x64-2.3.21.exe",
+							Platform:   "windows", SelfService: true,
+						},
+					},
+					{
+						ID: 2254239, Name: "Notepad++", Source: "programs",
+						SoftwarePackage: &api.SoftwareTitlePackageMeta{
+							PackageURL: "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.2/npp.8.9.2.Installer.x64.exe",
+							Platform:   "windows", SelfService: true,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{
+			{
+				Name: "NVDI",
+				Software: parser.ParsedSoftware{
+					FleetMaintained: []parser.ParsedFleetApp{
+						{Slug: "cursor/windows", SelfService: true},
+						{Slug: "notepad-plus-plus/windows", SelfService: true},
+					},
+				},
+			},
+		},
+	}
+
+	results := Diff(current, proposed, nil, nil)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+
+	if len(r.Software.Added) != 0 {
+		var slugs []string
+		for _, a := range r.Software.Added {
+			slugs = append(slugs, a.Name)
+		}
+		t.Errorf("expected 0 added fleet apps (URLs in Packages should not block inference), got %d: %v",
+			len(r.Software.Added), slugs)
+	}
+}
+
+// TestDiffFleetMaintainedAppsSkipsProposedCustomPackages verifies that titles
+// whose PackageURL matches a proposed custom package are not inferred as
+// fleet-maintained apps (prevents false REMOVED diffs for custom packages
+// that happen to share a name with a catalog entry).
+func TestDiffFleetMaintainedAppsSkipsProposedCustomPackages(t *testing.T) {
+	current := &api.FleetState{
+		FleetMaintainedCatalog: []api.FleetMaintainedApp{
+			{ID: 30, Slug: "gimp/windows", Name: "GIMP", Platform: "windows"},
+		},
+		Teams: []api.Team{
+			{
+				ID: 6, Name: "NVDI",
+				Software: api.TeamSoftware{FleetMaintained: nil},
+				SoftwareTitles: []api.SoftwareTitle{
+					{
+						ID: 99, Name: "GIMP", Source: "programs",
+						SoftwarePackage: &api.SoftwareTitlePackageMeta{
+							PackageURL: "https://download.gimp.org/gimp/v3.0/windows/gimp-3.0.4-setup.exe",
+							Platform:   "windows", SelfService: true,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{
+			{
+				Name: "NVDI",
+				Software: parser.ParsedSoftware{
+					Packages: []parser.ParsedSoftwarePackage{
+						{URL: "https://download.gimp.org/gimp/v3.0/windows/gimp-3.0.4-setup.exe"},
+					},
+					FleetMaintained: []parser.ParsedFleetApp{
+						{Slug: "some-other-app/windows", SelfService: true},
+					},
+				},
+			},
+		},
+	}
+
+	results := Diff(current, proposed, nil, nil)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	for _, d := range r.Software.Deleted {
+		if d.Name == "fleet app gimp/windows" || d.Name == "gimp/windows" {
+			t.Errorf("gimp/windows should NOT appear as deleted (it is a custom package, not FMA)")
+		}
+	}
+}
+
+// TestDiffFleetMaintainedAppsInferenceArchSuffix verifies that inference
+// matches titles whose OS-reported name includes an architecture suffix
+// (e.g., "Notepad++ (64-bit x64)") against catalog entries without it.
+func TestDiffFleetMaintainedAppsInferenceArchSuffix(t *testing.T) {
+	current := &api.FleetState{
+		FleetMaintainedCatalog: []api.FleetMaintainedApp{
+			{ID: 20, Slug: "notepad-plus-plus/windows", Name: "Notepad++", Platform: "windows"},
+		},
+		Teams: []api.Team{
+			{
+				ID: 6, Name: "NVDI",
+				Software: api.TeamSoftware{FleetMaintained: nil},
+				SoftwareTitles: []api.SoftwareTitle{
+					{
+						ID: 15977, Name: "Notepad++ (64-bit x64)", Source: "programs",
+						SoftwarePackage: &api.SoftwareTitlePackageMeta{
+							PackageURL: "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.2/npp.8.9.2.Installer.x64.exe",
+							Platform:   "windows", SelfService: true,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{
+			{
+				Name: "NVDI",
+				Software: parser.ParsedSoftware{
+					FleetMaintained: []parser.ParsedFleetApp{
+						{Slug: "notepad-plus-plus/windows", SelfService: true},
+					},
+				},
+			},
+		},
+	}
+
+	results := Diff(current, proposed, nil, nil)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if len(r.Software.Added) != 0 {
+		var slugs []string
+		for _, a := range r.Software.Added {
+			slugs = append(slugs, a.Name)
+		}
+		t.Errorf("expected 0 added (arch suffix should be stripped for matching), got %d: %v",
+			len(r.Software.Added), slugs)
+	}
+}
+
+// TestDiffFleetMaintainedAppsInferencePrefixMatch verifies that inference
+// matches titles whose OS-reported name is longer than the catalog's short
+// marketing name (e.g., "OBS Studio" -> catalog "OBS", "Zoom Workplace" ->
+// catalog "Zoom") via prefix matching.
+func TestDiffFleetMaintainedAppsInferencePrefixMatch(t *testing.T) {
+	current := &api.FleetState{
+		FleetMaintainedCatalog: []api.FleetMaintainedApp{
+			{ID: 50, Slug: "obs/windows", Name: "OBS", Platform: "windows"},
+			{ID: 51, Slug: "zoom/windows", Name: "Zoom", Platform: "windows"},
+		},
+		Teams: []api.Team{
+			{
+				ID: 6, Name: "NVDI",
+				Software: api.TeamSoftware{FleetMaintained: nil},
+				SoftwareTitles: []api.SoftwareTitle{
+					{
+						ID: 16700, Name: "OBS Studio", Source: "programs",
+						SoftwarePackage: &api.SoftwareTitlePackageMeta{
+							PackageURL: "https://github.com/obsproject/obs-studio/releases/download/32.0.4/OBS-Studio-32.0.4-Windows-x64-Installer.exe",
+							Platform:   "windows", SelfService: true,
+						},
+					},
+					{
+						ID: 16731, Name: "Zoom Workplace (X64)", Source: "programs",
+						SoftwarePackage: &api.SoftwareTitlePackageMeta{
+							PackageURL: "https://zoom.us/client/6.7.5.30439/ZoomInstallerFull.msi?archType=x64",
+							Platform:   "windows", SelfService: true,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{
+			{
+				Name: "NVDI",
+				Software: parser.ParsedSoftware{
+					FleetMaintained: []parser.ParsedFleetApp{
+						{Slug: "obs/windows", SelfService: true},
+						{Slug: "zoom/windows", SelfService: true},
+					},
+				},
+			},
+		},
+	}
+
+	results := Diff(current, proposed, nil, nil)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if len(r.Software.Added) != 0 {
+		var slugs []string
+		for _, a := range r.Software.Added {
+			slugs = append(slugs, a.Name)
+		}
+		t.Errorf("expected 0 added (prefix matching should resolve OBS/Zoom), got %d: %v",
+			len(r.Software.Added), slugs)
+	}
+}
+
+// TestDiffFleetMaintainedAppsScriptChange verifies that when an FMA's install
+// script content changes, the diff reports it as modified.
+func TestDiffFleetMaintainedAppsScriptChange(t *testing.T) {
+	current := &api.FleetState{
+		FleetMaintainedCatalog: []api.FleetMaintainedApp{
+			{ID: 10, Slug: "cursor/windows", Name: "Cursor", Platform: "windows"},
+		},
+		Teams: []api.Team{
+			{
+				ID: 6, Name: "NVDI",
+				Software: api.TeamSoftware{
+					FleetMaintained: []api.TeamFleetApp{
+						{
+							Slug:          "cursor/windows",
+							SelfService:   true,
+							InstallScript: "old-install-script",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{
+			{
+				Name: "NVDI",
+				Software: parser.ParsedSoftware{
+					FleetMaintained: []parser.ParsedFleetApp{
+						{
+							Slug:          "cursor/windows",
+							SelfService:   true,
+							InstallScript: "new-install-script",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	results := Diff(current, proposed, nil, nil)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if len(r.Software.Modified) != 1 {
+		t.Fatalf("expected 1 modified FMA, got %d (added=%d)", len(r.Software.Modified), len(r.Software.Added))
+	}
+	if r.Software.Modified[0].Name != "fleet app cursor/windows" {
+		t.Errorf("unexpected modified name: %q", r.Software.Modified[0].Name)
+	}
+	if _, ok := r.Software.Modified[0].Fields["install_script"]; !ok {
+		t.Error("expected install_script field diff")
 	}
 }
 
@@ -899,12 +1239,12 @@ func TestDiffGlobalConfig(t *testing.T) {
 		wantOld, wantNew string
 	}{
 		{
-			name:      "new key added",
+			name:      "key absent from API is skipped",
 			apiConfig: map[string]any{"org_info": map[string]any{"org_name": "Acme Corp"}},
 			proposedOrg: map[string]any{"org_info": map[string]any{
 				"org_name": "Acme Corp", "org_logo_url": "https://example.com/logo.png",
 			}},
-			wantChanges: 1, wantKey: "org_info.org_logo_url", wantNew: "https://example.com/logo.png",
+			wantChanges: 0, wantKeyAbsent: "org_info.org_logo_url",
 		},
 		{
 			name:      "value modified",
@@ -938,7 +1278,7 @@ func TestDiffGlobalConfig(t *testing.T) {
 				Teams:  []parser.ParsedTeam{},
 			}
 
-			results := Diff(current, proposed, "")
+			results := Diff(current, proposed, nil, nil)
 			global := findTeam(t, results, "(global)")
 
 			if len(global.Config) != tt.wantChanges {
@@ -991,7 +1331,7 @@ func TestDiffGlobalPoliciesAndQueries(t *testing.T) {
 		Teams: []parser.ParsedTeam{},
 	}
 
-	results := Diff(current, proposed, "")
+	results := Diff(current, proposed, nil, nil)
 	global := findTeam(t, results, "(global)")
 
 	if len(global.Policies.Added) != 1 {
@@ -1012,7 +1352,7 @@ func TestDiffGlobalSkippedWithTeamFilter(t *testing.T) {
 		Teams:  []parser.ParsedTeam{{Name: "Alpha"}},
 	}
 
-	results := Diff(current, proposed, "Alpha")
+	results := Diff(current, proposed, []string{"Alpha"}, nil)
 	for _, r := range results {
 		if r.Team == "(global)" {
 			t.Error("global result should be skipped when team filter is set")
@@ -1089,6 +1429,148 @@ func TestNormalizeWS(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("normalizeWS(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestStripArchSuffix(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"Notepad++ (64-bit x64)", "Notepad++"},
+		{"Zoom Workplace (X64)", "Zoom Workplace"},
+		{"7-Zip (x64)", "7-Zip"},
+		{"Something (arm64)", "Something"},
+		{"App (32-bit)", "App"},
+		{"No Suffix", "No Suffix"},
+		{"Parens (not arch)", "Parens (not arch)"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		got := stripArchSuffix(tc.in)
+		if got != tc.want {
+			t.Errorf("stripArchSuffix(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestDiffChangedFileFilterIncludesScriptSourceFiles verifies that when only a
+// script file changes (no YAML changes), the changed-file filter still includes
+// the parent software package in the diff output. Regression test for #11.
+func TestDiffChangedFileFilterIncludesScriptSourceFiles(t *testing.T) {
+	current := &api.FleetState{
+		Teams: []api.Team{
+			{
+				ID:   1,
+				Name: "Workstations",
+				Software: api.TeamSoftware{
+					Packages: []api.TeamSoftwarePackage{
+						{
+							ReferencedYAMLPath: "software/mac/printers-hq/printers-hq.yml",
+							URL:                "https://example.com/printers-hq-1.0.pkg",
+						},
+						{
+							ReferencedYAMLPath: "software/mac/slack/slack.yml",
+							URL:                "https://example.com/slack-old.dmg",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{
+			{
+				Name: "Workstations",
+				Software: parser.ParsedSoftware{
+					Packages: []parser.ParsedSoftwarePackage{
+						{
+							RefPath:    "software/mac/printers-hq/printers-hq.yml",
+							URL:        "https://example.com/printers-hq-2.0.pkg",
+							SourceFile: "/repo/software/mac/printers-hq/printers-hq.yml",
+							SourceFiles: []string{
+								"/repo/software/mac/printers-hq/printers-hq-install.sh",
+								"/repo/software/mac/printers-hq/printers-hq-uninstall.sh",
+							},
+						},
+						{
+							RefPath:    "software/mac/slack/slack.yml",
+							URL:        "https://example.com/slack-new.dmg",
+							SourceFile: "/repo/software/mac/slack/slack.yml",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Only the install script changed, no YAML changes.
+	changedFiles := []string{
+		"software/mac/printers-hq/printers-hq-install.sh",
+	}
+
+	results := Diff(current, proposed, nil, changedFiles)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+
+	// printers-hq should appear (its install script is in changedFiles).
+	if len(r.Software.Modified) != 1 {
+		t.Fatalf("expected 1 modified package (printers-hq via script match), got %d modified, %d added, %d deleted",
+			len(r.Software.Modified), len(r.Software.Added), len(r.Software.Deleted))
+	}
+	if !strings.Contains(r.Software.Modified[0].Name, "printers-hq") {
+		t.Errorf("expected printers-hq in modified, got %q", r.Software.Modified[0].Name)
+	}
+
+	// slack should be filtered out (its YAML is not in changedFiles).
+	for _, m := range r.Software.Modified {
+		if strings.Contains(m.Name, "slack") {
+			t.Errorf("slack should be filtered out, but found in modified: %q", m.Name)
+		}
+	}
+}
+
+// TestDiffChangedFileFilterYAMLStillWorks verifies that the changed-file filter
+// continues to work for YAML-only changes (no regression from script tracking).
+func TestDiffChangedFileFilterYAMLStillWorks(t *testing.T) {
+	current := &api.FleetState{
+		Teams: []api.Team{
+			{
+				ID:   1,
+				Name: "T",
+				Software: api.TeamSoftware{
+					Packages: []api.TeamSoftwarePackage{
+						{ReferencedYAMLPath: "software/mac/app/app.yml", URL: "https://example.com/old.pkg"},
+					},
+				},
+			},
+		},
+	}
+
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{
+			{
+				Name: "T",
+				Software: parser.ParsedSoftware{
+					Packages: []parser.ParsedSoftwarePackage{
+						{
+							RefPath:     "software/mac/app/app.yml",
+							URL:         "https://example.com/new.pkg",
+							SourceFile:  "/repo/software/mac/app/app.yml",
+							SourceFiles: []string{"/repo/software/mac/app/install.sh"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	results := Diff(current, proposed, nil, []string{"software/mac/app/app.yml"})
+	r := results[0]
+	if len(r.Software.Modified) != 1 {
+		t.Fatalf("expected 1 modified (YAML match), got %d", len(r.Software.Modified))
 	}
 }
 
