@@ -18,6 +18,7 @@ type JSONTeamDiff struct {
 	Queries  JSONResourceDiff   `json:"queries"`
 	Software JSONResourceDiff   `json:"software"`
 	Profiles JSONResourceDiff   `json:"profiles"`
+	Scripts  JSONResourceDiff   `json:"scripts"`
 	Labels   JSONLabelResult    `json:"labels"`
 	Config   []JSONConfigChange `json:"config,omitempty"`
 	Errors   []string           `json:"errors"`
@@ -78,6 +79,7 @@ func RenderDiffJSON(results []diff.DiffResult) (string, error) {
 			Queries:  convertResourceDiff(r.Queries),
 			Software: convertResourceDiff(r.Software),
 			Profiles: convertResourceDiff(r.Profiles),
+			Scripts:  convertResourceDiff(r.Scripts),
 			Labels:   convertLabels(r.Labels),
 			Config:   convertConfigChanges(r.Config),
 			Errors:   r.Errors,

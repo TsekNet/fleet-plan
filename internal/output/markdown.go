@@ -20,6 +20,7 @@ func HasChanges(results []diff.DiffResult) bool {
 	for _, r := range results {
 		if !r.Policies.IsEmpty() || !r.Queries.IsEmpty() ||
 			!r.Software.IsEmpty() || !r.Profiles.IsEmpty() ||
+			!r.Scripts.IsEmpty() ||
 			len(r.Config) > 0 || len(r.Errors) > 0 || len(r.Labels.Missing) > 0 {
 			return true
 		}
@@ -96,6 +97,7 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 			{"Query", result.Queries},
 			{"Software", result.Software},
 			{"Profile", result.Profiles},
+		{"Script", result.Scripts},
 		}
 
 		for _, rt := range types {
