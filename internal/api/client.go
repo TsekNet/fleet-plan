@@ -258,9 +258,10 @@ type Profile struct {
 
 // Script represents a Fleet script assigned to a team.
 type Script struct {
-	ID     uint   `json:"id"`
-	Name   string `json:"name"`
-	TeamID uint   `json:"team_id"`
+	ID      uint   `json:"id"`
+	Name    string `json:"name"`
+	TeamID  uint   `json:"team_id"`
+	Content string `json:"-"` // populated by GetScriptContent
 }
 
 // ---------- API response wrappers ----------
@@ -565,6 +566,32 @@ func (c *Client) GetScripts(ctx context.Context, teamID uint) ([]Script, error) 
 	return all, nil
 }
 
+// EnrichScriptContents fetches the content for each script by ID and populates
+// the Content field. Errors are non-fatal (content stays empty).
+func (c *Client) EnrichScriptContents(ctx context.Context, scripts []Script) {
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(5)
+	for i := range scripts {
+		if scripts[i].ID == 0 {
+			continue
+		}
+		idx := i
+		g.Go(func() error {
+			var resp struct {
+				Script struct {
+					ScriptContents string `json:"script_contents"`
+				} `json:"script"`
+			}
+			if err := c.get(gctx, fmt.Sprintf("/api/v1/fleet/scripts/%d", scripts[idx].ID), nil, &resp); err != nil {
+				return nil // non-fatal
+			}
+			scripts[idx].Content = strings.TrimSpace(resp.Script.ScriptContents)
+			return nil
+		})
+	}
+	g.Wait()
+}
+
 // FetchAll concurrently fetches the complete Fleet state. Uses errgroup for
 // parallel requests. If fetchGlobal is true, also fetches global config,
 // policies, and queries (for default.yml diffing).
@@ -690,6 +717,13 @@ func (c *Client) FetchAll(ctx context.Context, fetchGlobal ...bool) (*FleetState
 
 	if err := g.Wait(); err != nil {
 		return nil, err
+	}
+
+	// Enrich script contents (second pass, needs script IDs from first pass)
+	for i := range teamResults {
+		if !teamResults[i].ScriptsUnavailable && len(teamResults[i].Scripts) > 0 {
+			c.EnrichScriptContents(ctx, teamResults[i].Scripts)
+		}
 	}
 
 	state.Teams = teamResults

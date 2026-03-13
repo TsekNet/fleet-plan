@@ -1641,6 +1641,43 @@ func TestDiffScriptScenarios(t *testing.T) {
 	}
 }
 
+// TestDiffScriptContentModified verifies that script content changes are detected.
+func TestDiffScriptContentModified(t *testing.T) {
+	current := &api.FleetState{
+		Teams: []api.Team{{
+			ID:   1,
+			Name: "T",
+			Scripts: []api.Script{
+				{ID: 1, Name: "helper.ps1", Content: "Write-Host 'old version'"},
+				{ID: 2, Name: "unchanged.sh", Content: "echo hello"},
+			},
+		}},
+	}
+
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{{
+			Name: "T",
+			Scripts: []parser.ParsedScript{
+				{Name: "helper.ps1", Content: "Write-Host 'new version'", SourceFile: "/repo/teams/t.yml"},
+				{Name: "unchanged.sh", Content: "echo hello", SourceFile: "/repo/teams/t.yml"},
+			},
+		}},
+	}
+
+	results := Diff(current, proposed, nil, nil)
+	r := results[0]
+
+	if len(r.Scripts.Modified) != 1 {
+		t.Fatalf("expected 1 modified script, got %d", len(r.Scripts.Modified))
+	}
+	if r.Scripts.Modified[0].Name != "helper.ps1" {
+		t.Errorf("modified script name: got %q", r.Scripts.Modified[0].Name)
+	}
+	if len(r.Scripts.Added) != 0 || len(r.Scripts.Deleted) != 0 {
+		t.Errorf("expected no adds/deletes, got added=%d deleted=%d", len(r.Scripts.Added), len(r.Scripts.Deleted))
+	}
+}
+
 // TestDiffScriptChangedFileFilter verifies that the changed-file filter
 // includes scripts whose SourceFile matches a changed file.
 func TestDiffScriptChangedFileFilter(t *testing.T) {

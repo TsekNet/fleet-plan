@@ -111,6 +111,7 @@ type ParsedTeam struct {
 type ParsedScript struct {
 	Name       string // filename extracted from path (e.g., "foo.ps1")
 	Path       string // resolved absolute path
+	Content    string // file content (read at parse time)
 	SourceFile string // team YAML that referenced it
 }
 
@@ -440,9 +441,14 @@ func parseTeamFile(path string) (*ParsedTeam, []ParseError) {
 				continue
 			}
 		}
+		content := ""
+		if data, err := os.ReadFile(resolved); err == nil {
+			content = strings.TrimSpace(string(data))
+		}
 		team.Scripts = append(team.Scripts, ParsedScript{
 			Name:       filepath.Base(resolved),
 			Path:       resolved,
+			Content:    content,
 			SourceFile: path,
 		})
 	}

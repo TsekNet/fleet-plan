@@ -902,7 +902,8 @@ func diffProfiles(current []api.Profile, proposed []parser.ParsedProfile) (Resou
 }
 
 // diffScripts compares current scripts (from API) against proposed scripts
-// (from YAML). Scripts are matched by filename.
+// (from YAML). Scripts are matched by filename. Content is compared when both
+// sides have non-empty content.
 func diffScripts(current []api.Script, proposed []parser.ParsedScript) ResourceDiff {
 	var diff ResourceDiff
 
@@ -914,10 +915,20 @@ func diffScripts(current []api.Script, proposed []parser.ParsedScript) ResourceD
 	proposedNames := make(map[string]bool)
 	for _, s := range proposed {
 		proposedNames[s.Name] = true
-		if _, exists := currentMap[s.Name]; !exists {
+		cur, exists := currentMap[s.Name]
+		if !exists {
 			diff.Added = append(diff.Added, ResourceChange{
 				Name:   s.Name,
 				Fields: map[string]FieldDiff{"path": {New: s.Path}},
+			})
+			continue
+		}
+		// Compare content when both sides are available
+		if cur.Content != "" && s.Content != "" &&
+			normalizeWS(cur.Content) != normalizeWS(s.Content) {
+			diff.Modified = append(diff.Modified, ResourceChange{
+				Name:   s.Name,
+				Fields: map[string]FieldDiff{"content": {Old: "(changed)", New: "(changed)"}},
 			})
 		}
 	}
