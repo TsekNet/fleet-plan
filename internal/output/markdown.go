@@ -143,7 +143,7 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 	sb.WriteString("|---|---|---|---|---|\n")
 	for _, r := range rows {
 		sb.WriteString(fmt.Sprintf("| %s | %s | %s | **%s** | %s |\n",
-			r.change, r.team, r.kind, r.resource, r.details))
+			r.change, r.team, r.kind, mdEscapeTableCell(r.resource), r.details))
 	}
 	for _, e := range errRows {
 		sb.WriteString(e + "\n")

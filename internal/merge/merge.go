@@ -47,6 +47,11 @@ func merge(baseYAML, overlayYAML []byte) (map[string]any, error) {
 	if err := yaml.Unmarshal(overlayYAML, &overlay); err != nil {
 		return nil, fmt.Errorf("parsing overlay YAML: %w", err)
 	}
+	// If the overlay had content but did not parse as a map, the merge would
+	// silently produce only the base. Return an error instead.
+	if len(overlayYAML) > 0 && overlay == nil {
+		return nil, fmt.Errorf("parsing overlay YAML: non-map content cannot be merged")
+	}
 	if base == nil {
 		base = map[string]any{}
 	}

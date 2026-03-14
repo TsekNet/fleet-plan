@@ -242,8 +242,8 @@ func (e Env) gitHubChangedFiles() ([]string, error) {
 
 func (e Env) gitDiffChangedFiles() ([]string, error) {
 	// Try to fetch the target branch if needed.
-	if e.TargetBranch != "" && validBranch.MatchString(e.TargetBranch) {
-		_ = exec.Command("git", "fetch", "origin", e.TargetBranch, "--depth=200").Run()
+	if e.TargetBranch != "" && validBranch.MatchString(e.TargetBranch) && !strings.Contains(e.TargetBranch, "..") {
+		_ = exec.Command("git", "fetch", "origin", "--depth=200", "--", e.TargetBranch).Run()
 	}
 
 	var ref string
@@ -253,14 +253,14 @@ func (e Env) gitDiffChangedFiles() ([]string, error) {
 			ref = e.DiffBaseSHA + "...HEAD"
 		}
 	}
-	if ref == "" && e.TargetBranch != "" && validBranch.MatchString(e.TargetBranch) {
+	if ref == "" && e.TargetBranch != "" && validBranch.MatchString(e.TargetBranch) && !strings.Contains(e.TargetBranch, "..") {
 		ref = "origin/" + e.TargetBranch + "...HEAD"
 	}
 	if ref == "" {
 		return nil, fmt.Errorf("no base SHA or target branch available for git diff")
 	}
 
-	out, err := exec.Command("git", "diff", "--name-only", ref).Output()
+	out, err := exec.Command("git", "diff", "--name-only", "--", ref).Output()
 	if err != nil {
 		return nil, fmt.Errorf("git diff: %w", err)
 	}
@@ -297,11 +297,10 @@ func (e Env) gitLabPostOrUpdate(body, marker string) (string, error) {
 		e.GitLabAPIURL, url.PathEscape(e.GitLabProjectID), url.PathEscape(e.GitLabMRIID))
 
 	listURL := notesURL + "?per_page=100&sort=desc&order_by=updated_at"
-	noteID, method, reqURL, err := findThenRoute(notesURL, listURL, headers, marker, "PUT")
+	_, method, reqURL, err := findThenRoute(notesURL, listURL, headers, marker, "PUT")
 	if err != nil {
 		return "", fmt.Errorf("listing MR notes: %w", err)
 	}
-	_ = noteID // used implicitly in reqURL
 
 	params := url.Values{}
 	params.Set("body", body)
@@ -375,6 +374,9 @@ func (e Env) gitHubPostOrUpdate(body, marker string) (string, error) {
 // Response body is limited to maxResponseBody bytes.
 // Returns the response body or an error if the status code is >= 300.
 func doRequest(method, reqURL string, body io.Reader, headers map[string]string) ([]byte, error) {
+	if os.Getenv("FLEET_PLAN_INSECURE") != "1" && !strings.HasPrefix(strings.ToLower(reqURL), "https://") {
+		return nil, fmt.Errorf("refusing API request to non-HTTPS URL: %s", reqURL)
+	}
 	req, err := http.NewRequest(method, reqURL, body)
 	if err != nil {
 		return nil, err
