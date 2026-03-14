@@ -16,7 +16,7 @@ internal/
   config/config.go      Auth resolution: flags > env vars > config file
   parser/parser.go      YAML parser for fleet-gitops repos (path traversal protected)
   diff/differ.go        Semantic diff engine with per-field change tracking
-  envmerge/envmerge.go  In-memory YAML merge for --base + --env
+  merge/merge.go  In-memory YAML merge for --base + --env
   git/git.go          CI platform detection, changed-file resolution, MR/PR comment posting
   git/scope.go        Team inference from changed files
   output/

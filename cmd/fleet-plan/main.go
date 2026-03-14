@@ -17,7 +17,7 @@ import (
 	"github.com/TsekNet/fleet-plan/internal/api"
 	"github.com/TsekNet/fleet-plan/internal/config"
 	"github.com/TsekNet/fleet-plan/internal/diff"
-	"github.com/TsekNet/fleet-plan/internal/envmerge"
+	"github.com/TsekNet/fleet-plan/internal/merge"
 	"github.com/TsekNet/fleet-plan/internal/git"
 	"github.com/TsekNet/fleet-plan/internal/output"
 	"github.com/TsekNet/fleet-plan/internal/parser"
@@ -227,7 +227,7 @@ func resolveDefaultFile(repo, base, env string) (path string, cleanup func(), er
 	tmpPath := tmp.Name()
 	tmp.Close()
 
-	if err := envmerge.MergeFiles(base, env, tmpPath); err != nil {
+	if err := merge.MergeFiles(base, env, tmpPath); err != nil {
 		os.Remove(tmpPath)
 		return "", nil, fmt.Errorf("merging base+env: %w", err)
 	}

@@ -117,7 +117,7 @@ func TestRootFlagsIncludeAllFlags(t *testing.T) {
 	}
 
 	output := buf.String()
-	for _, flag := range []string{"--team", "--git", "--base", "--env", "--heading", "--verbose", "--detailed-exitcode"} {
+	for _, flag := range []string{"--team", "--git", "--base", "--env", "--heading", "--verbose", "--detailed-exitcodes"} {
 		if !strings.Contains(output, flag) {
 			t.Errorf("help should mention %s, got:\n%s", flag, output)
 		}
@@ -127,8 +127,8 @@ func TestRootFlagsIncludeAllFlags(t *testing.T) {
 // ---------- requires auth ----------
 
 func TestRequiresAuth(t *testing.T) {
-	t.Setenv("FLEET_PLAN_URL", "")
-	t.Setenv("FLEET_PLAN_TOKEN", "")
+	t.Setenv("FLEET_URL", "")
+	t.Setenv("FLEET_TOKEN", "")
 	t.Setenv("HOME", t.TempDir())
 
 	root := buildRootCmd()

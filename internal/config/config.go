@@ -11,9 +11,9 @@ import (
 
 const (
 	// EnvURL overrides the Fleet server URL.
-	EnvURL = "FLEET_PLAN_URL"
+	EnvURL = "FLEET_URL"
 	// EnvToken overrides the API token.
-	EnvToken = "FLEET_PLAN_TOKEN"
+	EnvToken = "FLEET_TOKEN"
 
 	// ConfigRelPath is the config file path relative to a root directory.
 	ConfigRelPath = ".config/fleet-plan.json"
