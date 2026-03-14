@@ -18,7 +18,7 @@ import (
 	"github.com/TsekNet/fleet-plan/internal/config"
 	"github.com/TsekNet/fleet-plan/internal/diff"
 	"github.com/TsekNet/fleet-plan/internal/envmerge"
-	"github.com/TsekNet/fleet-plan/internal/gitci"
+	"github.com/TsekNet/fleet-plan/internal/git"
 	"github.com/TsekNet/fleet-plan/internal/output"
 	"github.com/TsekNet/fleet-plan/internal/parser"
 )
@@ -62,15 +62,15 @@ Strictly read-only -- GET requests only.`,
 	}
 
 	pf := root.PersistentFlags()
-	pf.StringVar(&flagURL, "url", "", "Fleet server URL (or $FLEET_PLAN_URL)")
-	pf.StringVar(&flagToken, "token", "", "API token (or $FLEET_PLAN_TOKEN)")
+	pf.StringVar(&flagURL, "url", "", "Fleet server URL (or $FLEET_URL)")
+	pf.StringVar(&flagToken, "token", "", "API token (or $FLEET_TOKEN)")
 	pf.StringVar(&flagRepo, "repo", ".", "path to fleet-gitops repo")
 	pf.StringVarP(&flagFormat, "format", "f", "terminal", "output format: terminal, json, markdown")
 	pf.BoolVar(&flagNoColor, "no-color", false, "disable color output")
 	pf.BoolVarP(&flagVerbose, "verbose", "v", false, "show full old/new values for modified fields")
 	pf.StringSliceVar(&flagTeams, "team", nil, "diff only these teams (repeatable, default: all)")
 	pf.StringVar(&flagHeading, "heading", "", "## heading for markdown output")
-	pf.BoolVar(&flagDetailedExitCode, "detailed-exitcode", false, "exit 2 when changes detected (0=no changes, 1=error, 2=changes)")
+	pf.BoolVar(&flagDetailedExitCode, "detailed-exitcodes", false, "exit 2 when changes detected (0=no changes, 1=error, 2=changes)")
 
 	// --git mode.
 	pf.BoolVar(&flagGit, "git", false, "enable CI mode: auto-detect changed files, infer affected teams, post MR/PR comment")
@@ -109,11 +109,11 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 
 	// --git: detect CI context, resolve changed files + affected teams.
 	var changedFiles []string
-	var ci gitci.Env
+	var ci git.Env
 	teams := flagTeams
 
 	if flagGit {
-		ci = gitci.Detect()
+		ci = git.Detect()
 		resolved, skip := resolveCIScope(ci, flagRepo, flagEnv, &defaultFile, teams)
 		if skip {
 			return nil
@@ -178,7 +178,7 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 		})
 		fmt.Println(mdBody)
 
-		if flagGit && hasChanges && ci.Platform != gitci.PlatformUnknown {
+		if flagGit && hasChanges && ci.Platform != git.PlatformUnknown {
 			commentURL, err := ci.PostOrUpdateComment(mdBody, marker)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: could not post MR comment: %v\n", err)
@@ -245,19 +245,19 @@ func buildHeading(fleetURL string) string {
 // affected teams. Returns the scope and whether the caller should skip the diff
 // (no fleet-relevant files changed). Updates defaultFile in place if global
 // config is affected and no default was explicitly provided.
-func resolveCIScope(ci gitci.Env, repo, envFile string, defaultFile *string, explicitTeams []string) (gitci.Scope, bool) {
-	if ci.Platform == gitci.PlatformUnknown {
+func resolveCIScope(ci git.Env, repo, envFile string, defaultFile *string, explicitTeams []string) (git.Scope, bool) {
+	if ci.Platform == git.PlatformUnknown {
 		fmt.Fprintln(os.Stderr, "Warning: --git specified but no CI MR/PR context detected; running full diff")
-		return gitci.Scope{}, false
+		return git.Scope{}, false
 	}
 
 	files, err := ci.ChangedFiles()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not determine changed files (%v); running full diff\n", err)
-		return gitci.Scope{}, false
+		return git.Scope{}, false
 	}
 
-	scope := gitci.ResolveScope(repo, files, envFile)
+	scope := git.ResolveScope(repo, files, envFile)
 	if !scope.IncludeGlobal && len(scope.Teams) == 0 {
 		fmt.Fprintln(os.Stderr, "No fleet-relevant files changed in this MR, skipping diff.")
 		return scope, true

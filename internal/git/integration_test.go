@@ -1,4 +1,4 @@
-package gitci_test
+package git_test
 
 import (
 	"context"

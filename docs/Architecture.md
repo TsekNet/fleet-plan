@@ -16,6 +16,9 @@ internal/
   config/config.go      Auth resolution: flags > env vars > config file
   parser/parser.go      YAML parser for fleet-gitops repos (path traversal protected)
   diff/differ.go        Semantic diff engine with per-field change tracking
+  envmerge/envmerge.go  In-memory YAML merge for --base + --env
+  git/git.go          CI platform detection, changed-file resolution, MR/PR comment posting
+  git/scope.go        Team inference from changed files
   output/
     terminal.go         ANSI-colored terminal renderer (truncation, diff context)
     json.go             JSON renderer
@@ -41,6 +44,10 @@ flowchart LR
     G -->|terminal| H[terminal.go]
     G -->|json| I[json.go]
     G -->|markdown| J[markdown.go]
+    K[MR/PR API] -->|"git (--git)"| L[changed files]
+    L -->|scope.go| M[affected teams]
+    M --> E
+    J -->|"git (--git)"| N[MR/PR comment]
 ```
 
 ---
@@ -58,7 +65,7 @@ See [API Endpoints](API-Endpoints.md) for the full list.
 Priority order (highest wins):
 
 1. `--url` / `--token` flags
-2. `FLEET_PLAN_URL` / `FLEET_PLAN_TOKEN` env vars
+2. `FLEET_URL` / `FLEET_TOKEN` env vars
 3. Config file: `~/.config/fleet-plan.json` or `<repo>/.config/fleet-plan.json`
 
 Config file supports multiple contexts:
@@ -91,6 +98,7 @@ Compares `FleetState` (API) vs `ParsedRepo` (YAML). Produces `[]DiffResult` per 
 | Fleet-maintained apps | `slug` | self_service |
 | App Store apps | `app_store_id` | self_service |
 | Profiles | PayloadDisplayName | add/delete only |
+| Scripts | filename | line count diff (+N/-N) |
 | Labels | `name` (cross-ref) | valid/missing with host counts |
 
 Whitespace is normalized before comparison to avoid false positives from YAML vs API newline differences. Per-field diffs are stored in `ResourceChange.Fields` for both added and modified resources.

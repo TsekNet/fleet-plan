@@ -1,6 +1,6 @@
-// Package gitci detects the CI platform, fetches MR/PR changed files,
+// Package git detects the CI platform, fetches MR/PR changed files,
 // and posts or updates a comment with the fleet-plan diff output.
-package gitci
+package git
 
 import (
 	"encoding/json"

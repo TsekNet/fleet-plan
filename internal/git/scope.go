@@ -1,4 +1,4 @@
-package gitci
+package git
 
 import (
 	"os"
