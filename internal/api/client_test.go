@@ -506,6 +506,101 @@ func TestFetchAll(t *testing.T) {
 	}
 }
 
+// ---------- FetchAll with fetchGlobal ----------
+
+func TestFetchAllWithGlobal(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/fleet/teams", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(teamsResponse{Teams: []Team{{ID: 1, Name: "T"}}})
+	})
+	mux.HandleFunc("/api/v1/fleet/labels", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(labelsResponse{})
+	})
+	mux.HandleFunc("/api/v1/fleet/software/fleet_maintained_apps", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(fleetMaintainedAppsResponse{})
+	})
+	mux.HandleFunc("/api/v1/fleet/config", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"org_info": map[string]any{"org_name": "Test"}})
+	})
+	mux.HandleFunc("/api/v1/fleet/global/policies", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(policiesResponse{Policies: []Policy{{ID: 100, Name: "Global Policy"}}})
+	})
+	mux.HandleFunc("/api/v1/fleet/teams/1/policies", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(policiesResponse{})
+	})
+	mux.HandleFunc("/api/v1/fleet/queries", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(queriesResponse{Queries: []Query{{ID: 200, Name: "Global Query"}}})
+	})
+	mux.HandleFunc("/api/v1/fleet/software/titles", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(softwareResponse{})
+	})
+	mux.HandleFunc("/api/v1/fleet/configuration_profiles", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(profilesResponse{})
+	})
+	mux.HandleFunc("/api/v1/fleet/scripts", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(scriptsResponse{})
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	c := testClient(t, ts, "tok")
+	state, err := c.FetchAll(context.Background(), true)
+	if err != nil {
+		t.Fatalf("FetchAll: %v", err)
+	}
+	if state.Config == nil {
+		t.Error("expected Config to be populated")
+	}
+	if len(state.GlobalPolicies) != 1 {
+		t.Errorf("expected 1 global policy, got %d", len(state.GlobalPolicies))
+	}
+	if len(state.GlobalQueries) != 1 {
+		t.Errorf("expected 1 global query, got %d", len(state.GlobalQueries))
+	}
+}
+
+// ---------- GetSoftwareTitleDetail ----------
+
+func TestGetSoftwareTitleDetail(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/fleet/software/titles/42" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("team_id") != "5" {
+			t.Errorf("expected team_id=5, got %q", r.URL.Query().Get("team_id"))
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"software_title": map[string]any{
+				"id":   42,
+				"name": "7-Zip",
+				"software_package": map[string]any{
+					"install_script":   "choco install 7zip",
+					"uninstall_script": "choco uninstall 7zip",
+					"platform":         "windows",
+					"self_service":     true,
+				},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	c := testClient(t, ts, "tok")
+	detail, err := c.GetSoftwareTitleDetail(context.Background(), 42, 5)
+	if err != nil {
+		t.Fatalf("GetSoftwareTitleDetail: %v", err)
+	}
+	if detail.Name != "7-Zip" {
+		t.Errorf("name: got %q, want %q", detail.Name, "7-Zip")
+	}
+	if detail.SoftwarePackage == nil {
+		t.Fatal("expected SoftwarePackage to be populated")
+	}
+	if detail.SoftwarePackage.InstallScript != "choco install 7zip" {
+		t.Errorf("install_script: got %q", detail.SoftwarePackage.InstallScript)
+	}
+}
+
 // ---------- FetchAll permission fallback tests ----------
 
 func TestFetchAllSoftware403(t *testing.T) {
@@ -641,6 +736,240 @@ func TestFetchAllProfiles403(t *testing.T) {
 			}
 			if !tt.wantNil && len(state.Teams[0].Profiles) != 1 {
 				t.Errorf("expected 1 profile, got %d", len(state.Teams[0].Profiles))
+			}
+		})
+	}
+}
+
+// ---------- GetConfig ----------
+
+func TestGetConfig(t *testing.T) {
+	tests := []struct {
+		name       string
+		response   map[string]any
+		statusCode int
+		wantErr    bool
+		wantKey    string
+		wantValue  any
+	}{
+		{
+			name: "parses org_info",
+			response: map[string]any{
+				"org_info":      map[string]any{"org_name": "NVIDIA"},
+				"agent_options": map[string]any{"config": map[string]any{"interval": 300}},
+			},
+			statusCode: 200,
+			wantKey:    "org_info",
+		},
+		{
+			name:       "server error returns error",
+			statusCode: 500,
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/fleet/config" {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+				}
+				if tt.statusCode != 200 {
+					w.WriteHeader(tt.statusCode)
+					w.Write([]byte(`{"message":"error"}`))
+					return
+				}
+				json.NewEncoder(w).Encode(tt.response)
+			}))
+			defer ts.Close()
+
+			c := testClient(t, ts, "tok")
+			cfg, err := c.GetConfig(context.Background())
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("GetConfig: %v", err)
+			}
+			if tt.wantKey != "" {
+				if _, ok := cfg[tt.wantKey]; !ok {
+					t.Errorf("expected key %q in config, got keys: %v", tt.wantKey, keys(cfg))
+				}
+			}
+		})
+	}
+}
+
+func keys(m map[string]any) []string {
+	var ks []string
+	for k := range m {
+		ks = append(ks, k)
+	}
+	return ks
+}
+
+// ---------- GetScripts ----------
+
+func TestGetScripts(t *testing.T) {
+	tests := []struct {
+		name      string
+		teamID    uint
+		scripts   []Script
+		wantCount int
+	}{
+		{
+			name:   "returns scripts for team",
+			teamID: 5,
+			scripts: []Script{
+				{ID: 1, Name: "setup.ps1", TeamID: 5},
+				{ID: 2, Name: "cleanup.sh", TeamID: 5},
+			},
+			wantCount: 2,
+		},
+		{
+			name:      "empty result",
+			teamID:    99,
+			scripts:   []Script{},
+			wantCount: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/fleet/scripts" {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+				}
+				if tt.teamID > 0 {
+					gotTeamID := r.URL.Query().Get("team_id")
+					if gotTeamID == "" {
+						t.Error("expected team_id query param")
+					}
+				}
+				resp := scriptsResponse{Scripts: tt.scripts}
+				resp.Meta.HasNextResults = false
+				json.NewEncoder(w).Encode(resp)
+			}))
+			defer ts.Close()
+
+			c := testClient(t, ts, "tok")
+			scripts, err := c.GetScripts(context.Background(), tt.teamID)
+			if err != nil {
+				t.Fatalf("GetScripts: %v", err)
+			}
+			if len(scripts) != tt.wantCount {
+				t.Errorf("script count: got %d, want %d", len(scripts), tt.wantCount)
+			}
+			for i, s := range scripts {
+				if s.Name != tt.scripts[i].Name {
+					t.Errorf("script[%d] name: got %q, want %q", i, s.Name, tt.scripts[i].Name)
+				}
+			}
+		})
+	}
+}
+
+func TestGetScriptsPagination(t *testing.T) {
+	pageCount := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pageCount++
+		var scripts []Script
+		if pageCount <= 2 {
+			for i := 0; i < 3; i++ {
+				scripts = append(scripts, Script{
+					ID:   uint(pageCount*100 + i),
+					Name: fmt.Sprintf("script-%d.sh", pageCount*100+i),
+				})
+			}
+		}
+		resp := scriptsResponse{Scripts: scripts}
+		resp.Meta.HasNextResults = pageCount < 2
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer ts.Close()
+
+	c := testClient(t, ts, "tok")
+	scripts, err := c.GetScripts(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("GetScripts: %v", err)
+	}
+	if len(scripts) != 6 {
+		t.Errorf("expected 6 scripts across 2 pages, got %d", len(scripts))
+	}
+}
+
+// ---------- FetchAll scripts fallback ----------
+
+func TestFetchAllScripts403(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		wantNil bool
+		wantErr bool
+	}{
+		{name: "200 returns scripts", status: 200},
+		{name: "403 gracefully returns nil", status: 403, wantNil: true},
+		{name: "500 returns error", status: 500, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/api/v1/fleet/teams", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(teamsResponse{Teams: []Team{{ID: 1, Name: "T"}}})
+			})
+			mux.HandleFunc("/api/v1/fleet/labels", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(labelsResponse{})
+			})
+			mux.HandleFunc("/api/v1/fleet/software/fleet_maintained_apps", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(fleetMaintainedAppsResponse{})
+			})
+			mux.HandleFunc("/api/v1/fleet/teams/1/policies", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(policiesResponse{})
+			})
+			mux.HandleFunc("/api/v1/fleet/queries", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(queriesResponse{})
+			})
+			mux.HandleFunc("/api/v1/fleet/software/titles", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(softwareResponse{})
+			})
+			mux.HandleFunc("/api/v1/fleet/configuration_profiles", func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(profilesResponse{})
+			})
+			mux.HandleFunc("/api/v1/fleet/scripts", func(w http.ResponseWriter, r *http.Request) {
+				if tt.status != 200 {
+					w.WriteHeader(tt.status)
+					w.Write([]byte(`{"message":"forbidden"}`))
+					return
+				}
+				json.NewEncoder(w).Encode(scriptsResponse{
+					Scripts: []Script{{ID: 1, Name: "test.ps1", TeamID: 1}},
+				})
+			})
+
+			ts := httptest.NewServer(mux)
+			defer ts.Close()
+
+			c := testClient(t, ts, "tok")
+			state, err := c.FetchAll(context.Background())
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("FetchAll: %v", err)
+			}
+			if tt.wantNil && state.Teams[0].Scripts != nil {
+				t.Errorf("expected nil Scripts, got %v", state.Teams[0].Scripts)
+			}
+			if !tt.wantNil && len(state.Teams[0].Scripts) != 1 {
+				t.Errorf("expected 1 script, got %d", len(state.Teams[0].Scripts))
 			}
 		})
 	}
