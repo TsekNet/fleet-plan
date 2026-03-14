@@ -178,7 +178,6 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 
 	hasChanges := output.HasChanges(results)
 
-	// Build the marker used for idempotent comment updates.
 	const marker = "fleet-plan-marker"
 
 	switch flagFormat {
