@@ -98,7 +98,7 @@ Compares `FleetState` (API) vs `ParsedRepo` (YAML). Produces `[]DiffResult` per 
 | Fleet-maintained apps | `slug` | self_service |
 | App Store apps | `app_store_id` | self_service |
 | Profiles | PayloadDisplayName | add/delete only |
-| Scripts | filename | line count diff (+N/-N) |
+| Scripts | filename | line count diff (`+N/-N`, `~N` for single-line) |
 | Labels | `name` (cross-ref) | valid/missing with host counts |
 
 Whitespace is normalized before comparison to avoid false positives from YAML vs API newline differences. Per-field diffs are stored in `ResourceChange.Fields` for both added and modified resources.

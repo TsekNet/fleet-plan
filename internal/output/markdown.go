@@ -199,7 +199,7 @@ func mdFieldDetails(fields map[string]diff.FieldDiff) string {
 	for _, name := range names {
 		fd := fields[name]
 		if fd.Old == "" && fd.New != "" {
-			// Summary-only field (e.g., script diff with +N/-N lines)
+			// Summary-only field (e.g., script diff with +N/-N format)
 			parts = append(parts, fmt.Sprintf("`%s`: %s", name, mdCodeSpan(fd.New)))
 		} else {
 			old, new := mdDiffContext(fd.Old, fd.New, mdMaxFieldLen)

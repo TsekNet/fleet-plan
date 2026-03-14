@@ -26,7 +26,7 @@ Run in CI **before** `fleetctl gitops --dry-run`. fleet-plan shows *what* change
 | Team-scoped | Diff one team, multiple teams, or all teams at once |
 | CI integration | `--git` auto-detects GitLab/GitHub, resolves changed files, posts MR/PR comment |
 | Multi-env merge | `--base` + `--env` merges config overlays in-memory (no `yq` needed) |
-| Script diffing | Line-count diffs for team scripts (+N/-N) |
+| Script diffing | Line-count diffs for team scripts (`+N/-N`, `~N` for single-line) |
 | Label validation | Cross-references labels against Fleet, shows host counts |
 | Multiple formats | Terminal (colored), JSON, Markdown |
 | Read-only | GET requests only, never mutates Fleet |
