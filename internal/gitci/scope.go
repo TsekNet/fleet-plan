@@ -26,6 +26,9 @@ func ResolveScope(root string, changedFiles []string, envFile string) Scope {
 	var scope Scope
 
 	for _, f := range changedFiles {
+		if strings.Contains(f, "..") {
+			continue
+		}
 		switch {
 		case f == "base.yml", f == envFile, strings.HasPrefix(f, "labels/"):
 			scope.IncludeGlobal = true
@@ -92,7 +95,10 @@ func buildSearchPatterns(root, f string) []string {
 // teamsReferencingAny reads teams/*.yml and returns team names whose file
 // content contains any of the given patterns (plain string search).
 func teamsReferencingAny(root string, patterns []string) []string {
-	matches, _ := filepath.Glob(filepath.Join(root, "teams", "*.yml"))
+	ymlMatches, _ := filepath.Glob(filepath.Join(root, "teams", "*.yml"))
+	yamlMatches, _ := filepath.Glob(filepath.Join(root, "teams", "*.yaml"))
+	matches := append(ymlMatches, yamlMatches...)
+	seen := map[string]bool{}
 	var names []string
 	for _, teamFile := range matches {
 		content, err := os.ReadFile(teamFile)
@@ -102,7 +108,8 @@ func teamsReferencingAny(root string, patterns []string) []string {
 		for _, pat := range patterns {
 			if strings.Contains(string(content), pat) {
 				name := readTeamName(teamFile)
-				if name != "" {
+				if name != "" && !seen[name] {
+					seen[name] = true
 					names = append(names, name)
 				}
 				break

@@ -114,35 +114,13 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 
 	if flagGit {
 		ci = gitci.Detect()
-		if ci.Platform == gitci.PlatformUnknown {
-			fmt.Fprintln(os.Stderr, "Warning: --git specified but no CI MR/PR context detected; running full diff")
-		} else {
-			files, err := ci.ChangedFiles()
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: could not determine changed files (%v); running full diff\n", err)
-			} else {
-				scope := gitci.ResolveScope(flagRepo, files, flagEnv)
-
-				if !scope.IncludeGlobal && len(scope.Teams) == 0 {
-					fmt.Fprintln(os.Stderr, "No fleet-relevant files changed in this MR, skipping diff.")
-					return nil
-				}
-
-				changedFiles = scope.ChangedFiles
-				if scope.IncludeGlobal && defaultFile == "" {
-					// auto-detect default.yml from repo root
-					candidate := filepath.Join(flagRepo, "default.yml")
-					if _, err := os.Stat(candidate); err == nil {
-						defaultFile = candidate
-					}
-				}
-				if len(scope.Teams) > 0 && len(teams) == 0 {
-					teams = scope.Teams
-					for _, t := range teams {
-						fmt.Fprintf(os.Stderr, "Affected team: %s\n", t)
-					}
-				}
-			}
+		resolved, skip := resolveCIScope(ci, flagRepo, flagEnv, &defaultFile, teams)
+		if skip {
+			return nil
+		}
+		changedFiles = resolved.ChangedFiles
+		if len(resolved.Teams) > 0 && len(teams) == 0 {
+			teams = resolved.Teams
 		}
 	}
 
@@ -261,6 +239,44 @@ func resolveDefaultFile(repo, base, env string) (path string, cleanup func(), er
 func buildHeading(fleetURL string) string {
 	display := strings.TrimPrefix(fleetURL, "https://")
 	return fmt.Sprintf("Planned changes for [%s](%s)", display, fleetURL)
+}
+
+// resolveCIScope detects the CI platform, fetches changed files, and resolves
+// affected teams. Returns the scope and whether the caller should skip the diff
+// (no fleet-relevant files changed). Updates defaultFile in place if global
+// config is affected and no default was explicitly provided.
+func resolveCIScope(ci gitci.Env, repo, envFile string, defaultFile *string, explicitTeams []string) (gitci.Scope, bool) {
+	if ci.Platform == gitci.PlatformUnknown {
+		fmt.Fprintln(os.Stderr, "Warning: --git specified but no CI MR/PR context detected; running full diff")
+		return gitci.Scope{}, false
+	}
+
+	files, err := ci.ChangedFiles()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not determine changed files (%v); running full diff\n", err)
+		return gitci.Scope{}, false
+	}
+
+	scope := gitci.ResolveScope(repo, files, envFile)
+	if !scope.IncludeGlobal && len(scope.Teams) == 0 {
+		fmt.Fprintln(os.Stderr, "No fleet-relevant files changed in this MR, skipping diff.")
+		return scope, true
+	}
+
+	if scope.IncludeGlobal && *defaultFile == "" {
+		candidate := filepath.Join(repo, "default.yml")
+		if _, err := os.Stat(candidate); err == nil {
+			*defaultFile = candidate
+		}
+	}
+
+	if len(scope.Teams) > 0 && len(explicitTeams) == 0 {
+		for _, t := range scope.Teams {
+			fmt.Fprintf(os.Stderr, "Affected team: %s\n", t)
+		}
+	}
+
+	return scope, false
 }
 
 func main() {

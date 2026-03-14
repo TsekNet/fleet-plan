@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -78,6 +79,9 @@ func Detect() Env {
 		if e.GitHubPRNumber == "" {
 			e.GitHubPRNumber = os.Getenv("GITHUB_PR_NUMBER")
 		}
+		if e.GitHubPRNumber == "" {
+			e.GitHubPRNumber = parsePRNumberFromEvent(os.Getenv("GITHUB_EVENT_PATH"))
+		}
 		e.GitHubServerURL = os.Getenv("GITHUB_SERVER_URL")
 		e.GitHubToken = os.Getenv("GITHUB_TOKEN")
 		e.DiffBaseSHA = os.Getenv("GITHUB_BASE_SHA")
@@ -133,29 +137,12 @@ func (e Env) gitLabChangedFiles() ([]string, error) {
 	if e.GitLabAPIURL == "" || e.GitLabProjectID == "" || e.GitLabMRIID == "" || e.GitLabToken == "" {
 		return nil, fmt.Errorf("missing GitLab API env vars")
 	}
-	apiURL := fmt.Sprintf("%s/projects/%s/merge_requests/%s/changes",
+	apiURL := fmt.Sprintf("%s/projects/%s/merge_requests/%s/changes?per_page=100",
 		e.GitLabAPIURL, url.PathEscape(e.GitLabProjectID), e.GitLabMRIID)
 
-	req, err := http.NewRequest("GET", apiURL, nil)
+	body, err := fetchJSON(apiURL, map[string]string{"PRIVATE-TOKEN": e.GitLabToken})
 	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("PRIVATE-TOKEN", e.GitLabToken)
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitLab API returned %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("GitLab: %w", err)
 	}
 
 	var result struct {
@@ -187,27 +174,9 @@ func (e Env) gitHubChangedFiles() ([]string, error) {
 	}
 	apiURL := fmt.Sprintf("%s/repos/%s/pulls/%s/files", e.GitHubAPIURL, e.GitHubRepo, e.GitHubPRNumber)
 
-	req, err := http.NewRequest("GET", apiURL, nil)
+	body, err := fetchJSON(apiURL, githubHeaders(e.GitHubToken))
 	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+e.GitHubToken)
-	req.Header.Set("Accept", "application/vnd.github+json")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("GitHub: %w", err)
 	}
 
 	var result []struct {
@@ -226,20 +195,25 @@ func (e Env) gitHubChangedFiles() ([]string, error) {
 	return files, nil
 }
 
+var (
+	validSHA    = regexp.MustCompile(`^[0-9a-f]{40,64}$`)
+	validBranch = regexp.MustCompile(`^[a-zA-Z0-9/_.\-]+$`)
+)
+
 func (e Env) gitDiffChangedFiles() ([]string, error) {
 	// Try to fetch the target branch if needed.
-	if e.TargetBranch != "" {
+	if e.TargetBranch != "" && validBranch.MatchString(e.TargetBranch) {
 		_ = exec.Command("git", "fetch", "origin", e.TargetBranch, "--depth=200").Run()
 	}
 
 	var ref string
-	if e.DiffBaseSHA != "" {
+	if e.DiffBaseSHA != "" && validSHA.MatchString(e.DiffBaseSHA) {
 		// Verify the commit is available.
 		if err := exec.Command("git", "cat-file", "-e", e.DiffBaseSHA+"^{commit}").Run(); err == nil {
 			ref = e.DiffBaseSHA + "...HEAD"
 		}
 	}
-	if ref == "" && e.TargetBranch != "" {
+	if ref == "" && e.TargetBranch != "" && validBranch.MatchString(e.TargetBranch) {
 		ref = "origin/" + e.TargetBranch + "...HEAD"
 	}
 	if ref == "" {
@@ -278,13 +252,12 @@ func (e Env) gitLabPostOrUpdate(body, marker string) (string, error) {
 		return "", fmt.Errorf("FLEET_PLAN_BOT not set; skipping MR note")
 	}
 
+	headers := map[string]string{"PRIVATE-TOKEN": e.GitLabToken}
 	notesURL := fmt.Sprintf("%s/projects/%s/merge_requests/%s/notes",
 		e.GitLabAPIURL, url.PathEscape(e.GitLabProjectID), e.GitLabMRIID)
 
-	client := &http.Client{Timeout: 15 * time.Second}
-
 	// Find existing note by marker.
-	noteID, err := e.gitLabFindNote(client, notesURL, marker)
+	noteID, err := findCommentByMarker(notesURL+"?per_page=100&sort=desc&order_by=updated_at", headers, marker)
 	if err != nil {
 		return "", fmt.Errorf("listing MR notes: %w", err)
 	}
@@ -302,22 +275,13 @@ func (e Env) gitLabPostOrUpdate(body, marker string) (string, error) {
 		reqURL = notesURL
 	}
 
-	req, err := http.NewRequest(method, reqURL, strings.NewReader(encoded))
+	writeHeaders := map[string]string{
+		"PRIVATE-TOKEN": e.GitLabToken,
+		"Content-Type":  "application/x-www-form-urlencoded",
+	}
+	respBody, err := doRequest(method, reqURL, strings.NewReader(encoded), writeHeaders)
 	if err != nil {
 		return "", err
-	}
-	req.Header.Set("PRIVATE-TOKEN", e.GitLabToken)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("GitLab API %s %d: %s", method, resp.StatusCode, string(respBody))
 	}
 
 	var note struct {
@@ -328,56 +292,16 @@ func (e Env) gitLabPostOrUpdate(body, marker string) (string, error) {
 	return commentURL, nil
 }
 
-func (e Env) gitLabFindNote(client *http.Client, notesURL, marker string) (string, error) {
-	req, err := http.NewRequest("GET", notesURL+"?per_page=100&sort=desc&order_by=updated_at", nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("PRIVATE-TOKEN", e.GitLabToken)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	var notes []struct {
-		ID   int    `json:"id"`
-		Body string `json:"body"`
-	}
-	if err := json.Unmarshal(body, &notes); err != nil {
-		return "", err
-	}
-
-	needle := fmt.Sprintf("<!-- %s -->", marker)
-	for _, n := range notes {
-		if strings.Contains(n.Body, needle) {
-			return fmt.Sprintf("%d", n.ID), nil
-		}
-	}
-	return "", nil
-}
-
 func (e Env) gitHubPostOrUpdate(body, marker string) (string, error) {
 	if e.GitHubAPIURL == "" || e.GitHubRepo == "" || e.GitHubPRNumber == "" || e.GitHubToken == "" {
 		return "", fmt.Errorf("GITHUB_TOKEN not set; skipping PR comment")
 	}
 
+	headers := githubHeaders(e.GitHubToken)
 	commentsURL := fmt.Sprintf("%s/repos/%s/issues/%s/comments",
 		e.GitHubAPIURL, e.GitHubRepo, e.GitHubPRNumber)
 
-	client := &http.Client{Timeout: 15 * time.Second}
-
-	commentID, err := e.gitHubFindComment(client, commentsURL, marker)
+	commentID, err := findCommentByMarker(commentsURL+"?per_page=100", headers, marker)
 	if err != nil {
 		return "", fmt.Errorf("listing PR comments: %w", err)
 	}
@@ -393,23 +317,11 @@ func (e Env) gitHubPostOrUpdate(body, marker string) (string, error) {
 		reqURL = commentsURL
 	}
 
-	req, err := http.NewRequest(method, reqURL, strings.NewReader(string(payload)))
+	writeHeaders := githubHeaders(e.GitHubToken)
+	writeHeaders["Content-Type"] = "application/json"
+	respBody, err := doRequest(method, reqURL, strings.NewReader(string(payload)), writeHeaders)
 	if err != nil {
 		return "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+e.GitHubToken)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("GitHub API %s %d: %s", method, resp.StatusCode, string(respBody))
 	}
 
 	var comment struct {
@@ -419,42 +331,112 @@ func (e Env) gitHubPostOrUpdate(body, marker string) (string, error) {
 	return comment.HTMLURL, nil
 }
 
-func (e Env) gitHubFindComment(client *http.Client, commentsURL, marker string) (string, error) {
-	req, err := http.NewRequest("GET", commentsURL+"?per_page=100", nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+e.GitHubToken)
-	req.Header.Set("Accept", "application/vnd.github+json")
+// --- shared HTTP helpers ---
 
+// fetchJSON performs a GET request and returns the response body.
+func fetchJSON(url string, headers map[string]string) ([]byte, error) {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("status %d", resp.StatusCode)
+		return nil, fmt.Errorf("API returned %d", resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+// doRequest performs an HTTP request with the given method, body, and headers.
+// Returns the response body or an error if the status code is >= 300.
+func doRequest(method, url string, body io.Reader, headers map[string]string) ([]byte, error) {
+	req, err := http.NewRequest(method, url, body)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("API %s %d: %s", method, resp.StatusCode, string(respBody))
+	}
+	return respBody, nil
+}
+
+// findCommentByMarker fetches comments from listURL and returns the ID of the
+// first comment containing the marker, or empty string if none found.
+func findCommentByMarker(listURL string, headers map[string]string, marker string) (string, error) {
+	body, err := fetchJSON(listURL, headers)
 	if err != nil {
 		return "", err
 	}
 
-	var comments []struct {
+	var items []struct {
 		ID   int    `json:"id"`
 		Body string `json:"body"`
 	}
-	if err := json.Unmarshal(body, &comments); err != nil {
+	if err := json.Unmarshal(body, &items); err != nil {
 		return "", err
 	}
 
 	needle := fmt.Sprintf("<!-- %s -->", marker)
-	for _, c := range comments {
-		if strings.Contains(c.Body, needle) {
-			return fmt.Sprintf("%d", c.ID), nil
+	for _, item := range items {
+		if strings.Contains(item.Body, needle) {
+			return fmt.Sprintf("%d", item.ID), nil
 		}
 	}
 	return "", nil
+}
+
+// githubHeaders returns the standard headers for GitHub API requests.
+func githubHeaders(token string) map[string]string {
+	return map[string]string{
+		"Authorization": "Bearer " + token,
+		"Accept":        "application/vnd.github+json",
+	}
+}
+
+// parsePRNumberFromEvent reads the GitHub event JSON file and extracts the PR number.
+func parsePRNumberFromEvent(eventPath string) string {
+	if eventPath == "" {
+		return ""
+	}
+	data, err := os.ReadFile(eventPath)
+	if err != nil {
+		return ""
+	}
+	var event struct {
+		PullRequest struct {
+			Number json.Number `json:"number"`
+		} `json:"pull_request"`
+		Number json.Number `json:"number"`
+	}
+	if err := json.Unmarshal(data, &event); err != nil {
+		return ""
+	}
+	if n := event.PullRequest.Number.String(); n != "" && n != "0" {
+		return n
+	}
+	if n := event.Number.String(); n != "" && n != "0" {
+		return n
+	}
+	return ""
 }

@@ -30,7 +30,7 @@ func MergeFiles(basePath, overlayPath, outPath string) error {
 	if err != nil {
 		return fmt.Errorf("marshalling merged config: %w", err)
 	}
-	if err := os.WriteFile(outPath, out, 0o644); err != nil {
+	if err := os.WriteFile(outPath, out, 0o600); err != nil {
 		return fmt.Errorf("writing merged config to %q: %w", outPath, err)
 	}
 	return nil
