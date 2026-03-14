@@ -70,7 +70,7 @@ fleet-plan --git --base base.yml --env environments/prod.yml --format markdown
 | `-v`, `--verbose` | Show full old/new values for modified fields | `-v` |
 | `--heading` | Custom heading for markdown output | `--heading "Staging diff"` |
 | `--detailed-exitcodes` | Exit 2 when changes detected (0=none, 1=error) | `--detailed-exitcodes` |
-| `--git` | CI mode: auto-detect platform, resolve changed files, infer teams, post MR/PR comment | `--git` |
+| `--git` | CI mode: auto-detect platform, resolve changed files, infer teams, post MR/PR comment (requires `--format markdown`) | `--git` |
 | `--base` | Path to base.yml for multi-env config merge (requires `--env`) | `--base base.yml` |
 | `--env` | Path to environment overlay YAML, merged with `--base` in-memory | `--env environments/prod.yml` |
 
@@ -87,7 +87,11 @@ Use `fleetctl gitops --dry-run` for secret substitution, server-side validation,
 
 ### Auth
 
-Set via flags, environment variables, or a config file (`~/.config/fleet-plan.json`):
+Set via flags, environment variables, or a config file. Config file search order (first found wins):
+
+1. `<repo>/.config/fleet-plan.json`
+2. `~/.config/fleet-plan.json`
+
 
 ```bash
 # Env vars (CI)
@@ -133,6 +137,7 @@ When `--git` is active, fleet-plan:
 | Env var | Used for |
 |---|---|
 | `FLEET_URL` / `FLEET_TOKEN` | Fleet API auth |
+| `FLEET_PLAN_INSECURE` | Set to `1` to allow plain HTTP connections (local dev only) |
 | `FLEET_PLAN_BOT` | GitLab: token for posting MR comments |
 | `GITHUB_TOKEN` | GitHub: token for posting PR comments |
 | `CI_JOB_URL` / `GITHUB_SERVER_URL` + `GITHUB_REPOSITORY` + `GITHUB_RUN_ID` | Link back to the pipeline job in the comment |

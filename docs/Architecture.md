@@ -66,7 +66,7 @@ Priority order (highest wins):
 
 1. `--url` / `--token` flags
 2. `FLEET_URL` / `FLEET_TOKEN` env vars
-3. Config file: `~/.config/fleet-plan.json` or `<repo>/.config/fleet-plan.json`
+3. Config file: `<repo>/.config/fleet-plan.json` (checked first), then `~/.config/fleet-plan.json` (fallback)
 
 Config file supports multiple contexts:
 
@@ -118,11 +118,7 @@ Whitespace is normalized before comparison to avoid false positives from YAML vs
 
 ## Demo GIF
 
-`assets/vhs-demo.go` renders representative output from testdata for the README demo GIF. See [assets/README.md](https://github.com/TsekNet/fleet-plan/blob/main/assets/README.md) for prerequisites and setup. Regenerate:
-
-```bash
-vhs assets/demo.tape
-```
+`assets/vhs-demo.go` renders representative output from testdata for the README demo GIF. See [assets/README.md](https://github.com/TsekNet/fleet-plan/blob/main/assets/README.md) for prerequisites, setup, and regeneration steps.
 
 ---
 
@@ -148,7 +144,7 @@ When `--git` is active, the `git` package detects the CI platform and drives the
 - Maps are deep-merged: nested keys in the overlay are merged into the base map recursively.
 - Arrays are replaced: an overlay array replaces the base array entirely (no element-level merge).
 
-This mirrors how fleet-gitops environment overlays work, so the diff reflects the final merged config without writing a temporary file.
+This mirrors how fleet-gitops environment overlays work. The merged result is written to a temp file that is cleaned up on exit, so no persistent files are left behind.
 
 ---
 

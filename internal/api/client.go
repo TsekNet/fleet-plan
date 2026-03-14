@@ -31,8 +31,17 @@ type Client struct {
 func NewClient(baseURL, token string) (*Client, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
 
-	if strings.HasPrefix(strings.ToLower(baseURL), "http://") && os.Getenv("FLEET_PLAN_INSECURE") != "1" {
-		return nil, fmt.Errorf("refusing to send API token over plain HTTP (%s)\nUse https:// or set FLEET_PLAN_INSECURE=1 to override", baseURL)
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return nil, fmt.Errorf("invalid Fleet server URL %q: must include scheme and host", baseURL)
+	}
+
+	insecure := os.Getenv("FLEET_PLAN_INSECURE") == "1"
+	if strings.ToLower(parsed.Scheme) == "http" {
+		if !insecure {
+			return nil, fmt.Errorf("refusing to send API token over plain HTTP (%s)\nUse https:// or set FLEET_PLAN_INSECURE=1 to override", baseURL)
+		}
+		fmt.Fprintf(os.Stderr, "warning: FLEET_PLAN_INSECURE=1, sending API token over plain HTTP\n")
 	}
 
 	return &Client{
@@ -88,7 +97,9 @@ type HTTPError struct {
 }
 
 func (e *HTTPError) Error() string {
-	return fmt.Sprintf("HTTP %d from %s: %s", e.StatusCode, e.URL, e.Body)
+	body := strings.ReplaceAll(e.Body, "\n", " ")
+	body = strings.ReplaceAll(body, "\r", " ")
+	return fmt.Sprintf("HTTP %d from %s: %s", e.StatusCode, e.URL, body)
 }
 
 // isPermissionError returns true if err is an HTTP 403 or 404, which indicates
@@ -291,6 +302,9 @@ type labelsResponse struct {
 
 type profilesResponse struct {
 	Profiles []Profile `json:"profiles"`
+	Meta     struct {
+		HasNextResults bool `json:"has_next_results"`
+	} `json:"meta"`
 }
 
 type scriptsResponse struct {
@@ -525,17 +539,32 @@ func (c *Client) GetLabels(ctx context.Context) ([]Label, error) {
 	return all, nil
 }
 
-// GetProfiles fetches MDM profiles for a team.
+// GetProfiles fetches MDM profiles for a team with pagination.
 func (c *Client) GetProfiles(ctx context.Context, teamID uint) ([]Profile, error) {
-	q := url.Values{"per_page": {"250"}}
-	if teamID > 0 {
-		q.Set("team_id", strconv.FormatUint(uint64(teamID), 10))
+	var all []Profile
+	page := 0
+	for {
+		q := url.Values{
+			"per_page": {"250"},
+			"page":     {strconv.Itoa(page)},
+		}
+		if teamID > 0 {
+			q.Set("team_id", strconv.FormatUint(uint64(teamID), 10))
+		}
+		var resp profilesResponse
+		if err := c.get(ctx, "/api/v1/fleet/configuration_profiles", q, &resp); err != nil {
+			return nil, fmt.Errorf("fetching profiles (team %d): %w", teamID, err)
+		}
+		all = append(all, resp.Profiles...)
+		if !resp.Meta.HasNextResults || len(resp.Profiles) == 0 {
+			break
+		}
+		page++
+		if page > 100 { // safety: max 25k profiles
+			break
+		}
 	}
-	var resp profilesResponse
-	if err := c.get(ctx, "/api/v1/fleet/configuration_profiles", q, &resp); err != nil {
-		return nil, fmt.Errorf("fetching profiles (team %d): %w", teamID, err)
-	}
-	return resp.Profiles, nil
+	return all, nil
 }
 
 // GetScripts fetches scripts for a team with pagination.
@@ -646,6 +675,13 @@ func (c *Client) FetchAll(ctx context.Context, fetchGlobal ...bool) (*FleetState
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(5)
 
+	// Local variables for global results; assigned to state after g.Wait().
+	var (
+		globalConfig   map[string]any
+		globalPolicies []Policy
+		globalQueries  []Query
+	)
+
 	// Fetch global config/policies/queries in parallel with team resources
 	if wantGlobal {
 		g.Go(func() error {
@@ -653,7 +689,7 @@ func (c *Client) FetchAll(ctx context.Context, fetchGlobal ...bool) (*FleetState
 			if err != nil {
 				return err
 			}
-			state.Config = cfg
+			globalConfig = cfg
 			return nil
 		})
 		g.Go(func() error {
@@ -661,7 +697,7 @@ func (c *Client) FetchAll(ctx context.Context, fetchGlobal ...bool) (*FleetState
 			if err != nil {
 				return err
 			}
-			state.GlobalPolicies = policies
+			globalPolicies = policies
 			return nil
 		})
 		g.Go(func() error {
@@ -669,10 +705,24 @@ func (c *Client) FetchAll(ctx context.Context, fetchGlobal ...bool) (*FleetState
 			if err != nil {
 				return err
 			}
-			state.GlobalQueries = queries
+			globalQueries = queries
 			return nil
 		})
 	}
+
+	// teamPartials holds per-goroutine results indexed by team slot.
+	// Each field is written by exactly one goroutine, so there is no data race.
+	type teamPartial struct {
+		policies            []Policy
+		queries             []Query
+		profiles            []Profile
+		profilesUnavailable bool
+		softwareTitles      []SoftwareTitle
+		softwareUnavailable bool
+		scripts             []Script
+		scriptsUnavailable  bool
+	}
+	teamPartials := make([]teamPartial, len(teams))
 
 	teamResults := make([]Team, len(teams))
 	for i, t := range teams {
@@ -685,7 +735,7 @@ func (c *Client) FetchAll(ctx context.Context, fetchGlobal ...bool) (*FleetState
 			if err != nil {
 				return err
 			}
-			teamResults[idx].Policies = policies
+			teamPartials[idx].policies = policies
 			return nil
 		})
 
@@ -694,7 +744,7 @@ func (c *Client) FetchAll(ctx context.Context, fetchGlobal ...bool) (*FleetState
 			if err != nil {
 				return err
 			}
-			teamResults[idx].Queries = queries
+			teamPartials[idx].queries = queries
 			return nil
 		})
 
@@ -704,10 +754,10 @@ func (c *Client) FetchAll(ctx context.Context, fetchGlobal ...bool) (*FleetState
 				if !isPermissionError(err) {
 					return err
 				}
-				teamResults[idx].ProfilesUnavailable = true
+				teamPartials[idx].profilesUnavailable = true
 				profiles = nil
 			}
-			teamResults[idx].Profiles = profiles
+			teamPartials[idx].profiles = profiles
 			return nil
 		})
 
@@ -717,10 +767,10 @@ func (c *Client) FetchAll(ctx context.Context, fetchGlobal ...bool) (*FleetState
 				if !isPermissionError(err) {
 					return err
 				}
-				teamResults[idx].SoftwareUnavailable = true
+				teamPartials[idx].softwareUnavailable = true
 				softwareTitles = nil
 			}
-			teamResults[idx].SoftwareTitles = softwareTitles
+			teamPartials[idx].softwareTitles = softwareTitles
 			return nil
 		})
 
@@ -730,16 +780,36 @@ func (c *Client) FetchAll(ctx context.Context, fetchGlobal ...bool) (*FleetState
 				if !isPermissionError(err) {
 					return err
 				}
-				teamResults[idx].ScriptsUnavailable = true
+				teamPartials[idx].scriptsUnavailable = true
 				scripts = nil
 			}
-			teamResults[idx].Scripts = scripts
+			teamPartials[idx].scripts = scripts
 			return nil
 		})
 	}
 
 	if err := g.Wait(); err != nil {
 		return nil, err
+	}
+
+	// Assign global results after all goroutines have completed.
+	if wantGlobal {
+		state.Config = globalConfig
+		state.GlobalPolicies = globalPolicies
+		state.GlobalQueries = globalQueries
+	}
+
+	// Assign per-team partial results.
+	for i := range teamResults {
+		p := &teamPartials[i]
+		teamResults[i].Policies = p.policies
+		teamResults[i].Queries = p.queries
+		teamResults[i].Profiles = p.profiles
+		teamResults[i].ProfilesUnavailable = p.profilesUnavailable
+		teamResults[i].SoftwareTitles = p.softwareTitles
+		teamResults[i].SoftwareUnavailable = p.softwareUnavailable
+		teamResults[i].Scripts = p.scripts
+		teamResults[i].ScriptsUnavailable = p.scriptsUnavailable
 	}
 
 	// Enrich script contents (second pass, needs script IDs from first pass)

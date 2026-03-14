@@ -13,9 +13,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// repoRoot is set by ParseRepo and used by safePath to prevent path traversal.
-var repoRoot string
-
 // safePath ensures a resolved file path stays within the repo root.
 // It resolves symlinks to prevent traversal via symlinked paths.
 func safePath(root, resolved string) error {
@@ -269,7 +266,8 @@ type rawProfileRef struct {
 
 // ---------- Parser ----------
 
-func matchesAnyTeam(name string, filters []string) bool {
+// MatchesAnyTeam reports whether name case-insensitively matches any filter.
+func MatchesAnyTeam(name string, filters []string) bool {
 	for _, f := range filters {
 		if strings.EqualFold(name, f) {
 			return true
@@ -285,7 +283,6 @@ func matchesAnyTeam(name string, filters []string) bool {
 // the repo root directory.
 func ParseRepo(root string, teamFilters []string, defaultFile string) (*ParsedRepo, error) {
 	repo := &ParsedRepo{}
-	repoRoot = root
 
 	teamsDir := filepath.Join(root, "teams")
 	entries, err := os.ReadDir(teamsDir)
@@ -301,12 +298,13 @@ func ParseRepo(root string, teamFilters []string, defaultFile string) (*ParsedRe
 	}
 
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yml") {
+		name := entry.Name()
+		if entry.IsDir() || (!strings.HasSuffix(name, ".yml") && !strings.HasSuffix(name, ".yaml")) {
 			continue
 		}
 
-		teamFile := filepath.Join(teamsDir, entry.Name())
-		team, errs := parseTeamFile(teamFile)
+		teamFile := filepath.Join(teamsDir, name)
+		team, errs := parseTeamFile(root, teamFile)
 		if len(errs) > 0 {
 			repo.Errors = append(repo.Errors, errs...)
 		}
@@ -314,7 +312,7 @@ func ParseRepo(root string, teamFilters []string, defaultFile string) (*ParsedRe
 			continue
 		}
 
-		if len(teamFilters) > 0 && !matchesAnyTeam(team.Name, teamFilters) {
+		if len(teamFilters) > 0 && !MatchesAnyTeam(team.Name, teamFilters) {
 			continue
 		}
 
@@ -327,7 +325,7 @@ func ParseRepo(root string, teamFilters []string, defaultFile string) (*ParsedRe
 		resolvedDefault = filepath.Join(root, "default.yml")
 	}
 	if _, err := os.Stat(resolvedDefault); err == nil {
-		parsed, errs := parseDefaultFile(resolvedDefault)
+		parsed, errs := parseDefaultFile(root, resolvedDefault)
 		repo.Errors = append(repo.Errors, errs...)
 		if parsed != nil {
 			repo.Global = parsed.ParsedGlobal
@@ -339,7 +337,7 @@ func ParseRepo(root string, teamFilters []string, defaultFile string) (*ParsedRe
 }
 
 // parseTeamFile parses a single teams/*.yml file and resolves all path: refs.
-func parseTeamFile(path string) (*ParsedTeam, []ParseError) {
+func parseTeamFile(root, path string) (*ParsedTeam, []ParseError) {
 	var errs []ParseError
 
 	data, err := os.ReadFile(path)
@@ -378,31 +376,31 @@ func parseTeamFile(path string) (*ParsedTeam, []ParseError) {
 
 	// Resolve policies
 	for _, ref := range raw.Policies {
-		policies, parseErrs := resolvePolicyRef(dir, ref.Path, path)
+		policies, parseErrs := resolvePolicyRef(root, dir, ref.Path, path)
 		errs = append(errs, parseErrs...)
 		team.Policies = append(team.Policies, policies...)
 	}
 
 	// Resolve queries
 	for _, ref := range raw.Queries {
-		queries, parseErrs := resolveQueryRef(dir, ref.Path, path)
+		queries, parseErrs := resolveQueryRef(root, dir, ref.Path, path)
 		errs = append(errs, parseErrs...)
 		team.Queries = append(team.Queries, queries...)
 	}
 
 	// Resolve software packages
 	for _, ref := range raw.Software.Packages {
-		pkgs, parseErrs := resolveSoftwareRef(dir, ref.Path, path)
+		pkgs, parseErrs := resolveSoftwareRef(root, dir, ref.Path, path)
 		errs = append(errs, parseErrs...)
 		for i := range pkgs {
 			canonicalRef := ""
-			if repoRoot != "" && pkgs[i].SourceFile != "" {
-				if rel, err := filepath.Rel(repoRoot, pkgs[i].SourceFile); err == nil {
-					canonicalRef = normalizeSoftwareRefPath(rel)
+			if root != "" && pkgs[i].SourceFile != "" {
+				if rel, err := filepath.Rel(root, pkgs[i].SourceFile); err == nil {
+					canonicalRef = NormalizeSoftwarePath(rel)
 				}
 			}
 			if canonicalRef == "" {
-				canonicalRef = normalizeSoftwareRefPath(ref.Path)
+				canonicalRef = NormalizeSoftwarePath(ref.Path)
 			}
 			pkgs[i].RefPath = canonicalRef
 			// Team-level package entries can override package file settings.
@@ -425,7 +423,7 @@ func parseTeamFile(path string) (*ParsedTeam, []ParseError) {
 		}
 	}
 	for _, rawFMA := range raw.Software.FleetMaintained {
-		fma, fmaErrs := resolveFleetApp(dir, rawFMA, path)
+		fma, fmaErrs := resolveFleetApp(root, dir, rawFMA, path)
 		errs = append(errs, fmaErrs...)
 		team.Software.FleetMaintained = append(team.Software.FleetMaintained, fma)
 	}
@@ -435,8 +433,8 @@ func parseTeamFile(path string) (*ParsedTeam, []ParseError) {
 	// Fleet identifies scripts by filename, which is what the API returns.
 	for _, ref := range raw.Controls.Scripts {
 		resolved := filepath.Join(dir, ref.Path)
-		if repoRoot != "" {
-			if err := safePath(repoRoot, resolved); err != nil {
+		if root != "" {
+			if err := safePath(root, resolved); err != nil {
 				errs = append(errs, ParseError{File: path, Message: err.Error()})
 				continue
 			}
@@ -458,8 +456,8 @@ func parseTeamFile(path string) (*ParsedTeam, []ParseError) {
 	// PayloadDisplayName for .mobileconfig), NOT by the filename.
 	for _, ref := range raw.Controls.MacOSSettings.CustomSettings {
 		resolved := filepath.Join(dir, ref.Path)
-		if repoRoot != "" {
-			if err := safePath(repoRoot, resolved); err != nil {
+		if root != "" {
+			if err := safePath(root, resolved); err != nil {
 				errs = append(errs, ParseError{File: path, Message: err.Error()})
 				continue
 			}
@@ -477,8 +475,8 @@ func parseTeamFile(path string) (*ParsedTeam, []ParseError) {
 	}
 	for _, ref := range raw.Controls.WindowsSettings.CustomSettings {
 		resolved := filepath.Join(dir, ref.Path)
-		if repoRoot != "" {
-			if err := safePath(repoRoot, resolved); err != nil {
+		if root != "" {
+			if err := safePath(root, resolved); err != nil {
 				errs = append(errs, ParseError{File: path, Message: err.Error()})
 				continue
 			}
@@ -501,14 +499,14 @@ func parseTeamFile(path string) (*ParsedTeam, []ParseError) {
 // readYAMLRef resolves a path: reference, validates it stays within the repo
 // root, reads the file, and returns the raw bytes and resolved path. This is
 // the shared core of resolvePolicyRef, resolveQueryRef, and resolveSoftwareRef.
-func readYAMLRef(baseDir, refPath, parentFile, label string) (data []byte, resolved string, errs []ParseError) {
+func readYAMLRef(root, baseDir, refPath, parentFile, label string) (data []byte, resolved string, errs []ParseError) {
 	if refPath == "" {
 		return nil, "", []ParseError{{File: parentFile, Message: fmt.Sprintf("empty %spath: reference", label)}}
 	}
 
 	resolved = filepath.Join(baseDir, refPath)
-	if repoRoot != "" {
-		if err := safePath(repoRoot, resolved); err != nil {
+	if root != "" {
+		if err := safePath(root, resolved); err != nil {
 			return nil, "", []ParseError{{File: parentFile, Message: err.Error()}}
 		}
 	}
@@ -523,8 +521,8 @@ func readYAMLRef(baseDir, refPath, parentFile, label string) (data []byte, resol
 }
 
 // resolvePolicyRef reads a policy YAML file and returns parsed policies.
-func resolvePolicyRef(baseDir, refPath, parentFile string) ([]ParsedPolicy, []ParseError) {
-	data, resolved, errs := readYAMLRef(baseDir, refPath, parentFile, "")
+func resolvePolicyRef(root, baseDir, refPath, parentFile string) ([]ParsedPolicy, []ParseError) {
+	data, resolved, errs := readYAMLRef(root, baseDir, refPath, parentFile, "")
 	if errs != nil {
 		return nil, errs
 	}
@@ -545,8 +543,8 @@ func resolvePolicyRef(baseDir, refPath, parentFile string) ([]ParsedPolicy, []Pa
 }
 
 // resolveQueryRef reads a query YAML file and returns parsed queries.
-func resolveQueryRef(baseDir, refPath, parentFile string) ([]ParsedQuery, []ParseError) {
-	data, resolved, errs := readYAMLRef(baseDir, refPath, parentFile, "")
+func resolveQueryRef(root, baseDir, refPath, parentFile string) ([]ParsedQuery, []ParseError) {
+	data, resolved, errs := readYAMLRef(root, baseDir, refPath, parentFile, "")
 	if errs != nil {
 		return nil, errs
 	}
@@ -570,8 +568,8 @@ func resolveQueryRef(baseDir, refPath, parentFile string) ([]ParsedQuery, []Pars
 // install_script, uninstall_script, pre_install_query, or post_install_script
 // path: references within it. The resolved paths are tracked in SourceFiles
 // so the changed-file filter can match script-only MR changes.
-func resolveSoftwareRef(baseDir, refPath, parentFile string) ([]ParsedSoftwarePackage, []ParseError) {
-	data, resolved, errs := readYAMLRef(baseDir, refPath, parentFile, "software ")
+func resolveSoftwareRef(root, baseDir, refPath, parentFile string) ([]ParsedSoftwarePackage, []ParseError) {
+	data, resolved, errs := readYAMLRef(root, baseDir, refPath, parentFile, "software ")
 	if errs != nil {
 		return nil, errs
 	}
@@ -594,8 +592,8 @@ func resolveSoftwareRef(baseDir, refPath, parentFile string) ([]ParsedSoftwarePa
 			continue
 		}
 		scriptPath := filepath.Join(pkgDir, ref.Path)
-		if repoRoot != "" {
-			if err := safePath(repoRoot, scriptPath); err != nil {
+		if root != "" {
+			if err := safePath(root, scriptPath); err != nil {
 				errs = append(errs, ParseError{File: resolved, Message: err.Error()})
 				continue
 			}
@@ -609,7 +607,7 @@ func resolveSoftwareRef(baseDir, refPath, parentFile string) ([]ParsedSoftwarePa
 // resolveFleetApp resolves path: references in a fleet-maintained app entry,
 // reading script and query file content. Non-fatal: missing optional files are
 // logged as parse errors but the FMA is still returned.
-func resolveFleetApp(baseDir string, raw rawFleetApp, parentFile string) (ParsedFleetApp, []ParseError) {
+func resolveFleetApp(root, baseDir string, raw rawFleetApp, parentFile string) (ParsedFleetApp, []ParseError) {
 	var errs []ParseError
 	fma := ParsedFleetApp{
 		Slug:        raw.Slug,
@@ -620,7 +618,7 @@ func resolveFleetApp(baseDir string, raw rawFleetApp, parentFile string) (Parsed
 		if ref == nil || ref.Path == "" {
 			return ""
 		}
-		data, resolved, readErrs := readYAMLRef(baseDir, ref.Path, parentFile, label+" ")
+		data, resolved, readErrs := readYAMLRef(root, baseDir, ref.Path, parentFile, label+" ")
 		if readErrs != nil {
 			errs = append(errs, readErrs...)
 			return ""
@@ -634,7 +632,7 @@ func resolveFleetApp(baseDir string, raw rawFleetApp, parentFile string) (Parsed
 	fma.PostInstallScript = readScript(raw.PostInstallScript, "post_install_script")
 
 	if raw.PreInstallQuery != nil && raw.PreInstallQuery.Path != "" {
-		data, resolved, readErrs := readYAMLRef(baseDir, raw.PreInstallQuery.Path, parentFile, "pre_install_query ")
+		data, resolved, readErrs := readYAMLRef(root, baseDir, raw.PreInstallQuery.Path, parentFile, "pre_install_query ")
 		if readErrs != nil {
 			errs = append(errs, readErrs...)
 		} else {
@@ -663,10 +661,10 @@ func extractQueryFromYAML(data []byte) string {
 	return strings.TrimSpace(string(data))
 }
 
-// normalizeSoftwareRefPath canonicalizes teams/*.yml software package paths so
+// NormalizeSoftwarePath canonicalizes teams/*.yml software package paths so
 // they match Fleet API's software.packages[].referenced_yaml_path format.
 // Example: "../software/mac/slack/slack.yml" -> "software/mac/slack/slack.yml"
-func normalizeSoftwareRefPath(p string) string {
+func NormalizeSoftwarePath(p string) string {
 	p = filepath.ToSlash(strings.TrimSpace(p))
 	if p == "" {
 		return ""
@@ -689,7 +687,7 @@ type parsedDefault struct {
 
 // parseDefaultFile parses default.yml (the pre-merged global config) and extracts
 // labels, global policies, global queries, org_settings, agent_options, and controls.
-func parseDefaultFile(path string) (*parsedDefault, []ParseError) {
+func parseDefaultFile(root, path string) (*parsedDefault, []ParseError) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, []ParseError{{File: path, Message: fmt.Sprintf("could not read: %s", err)}}
@@ -734,14 +732,14 @@ func parseDefaultFile(path string) (*parsedDefault, []ParseError) {
 
 	// Resolve global policies
 	for _, ref := range rawStruct.Policies {
-		policies, parseErrs := resolvePolicyRef(dir, ref.Path, path)
+		policies, parseErrs := resolvePolicyRef(root, dir, ref.Path, path)
 		errs = append(errs, parseErrs...)
 		global.Policies = append(global.Policies, policies...)
 	}
 
 	// Resolve global queries
 	for _, ref := range rawStruct.Queries {
-		queries, parseErrs := resolveQueryRef(dir, ref.Path, path)
+		queries, parseErrs := resolveQueryRef(root, dir, ref.Path, path)
 		errs = append(errs, parseErrs...)
 		global.Queries = append(global.Queries, queries...)
 	}
@@ -753,8 +751,8 @@ func parseDefaultFile(path string) (*parsedDefault, []ParseError) {
 			continue
 		}
 		resolved := filepath.Join(dir, ref.Path)
-		if repoRoot != "" {
-			if err := safePath(repoRoot, resolved); err != nil {
+		if root != "" {
+			if err := safePath(root, resolved); err != nil {
 				errs = append(errs, ParseError{File: path, Message: err.Error()})
 				continue
 			}

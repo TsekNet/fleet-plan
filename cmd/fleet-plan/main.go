@@ -144,8 +144,7 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 
 	fmt.Fprintf(os.Stderr, "Fetching Fleet state from %s...\n", auth.URL)
 
-	fetchGlobal := repo.Global != nil
-	state, err := client.FetchAll(ctx, fetchGlobal)
+	state, err := client.FetchAll(ctx, repo.Global != nil)
 	if err != nil {
 		return err
 	}

@@ -29,6 +29,9 @@ func ResolveScope(root string, changedFiles []string, envFile string) Scope {
 	var scope Scope
 
 	for _, f := range changedFiles {
+		if strings.Contains(f, "..") {
+			continue
+		}
 		cleaned := filepath.Clean(f)
 		if strings.HasPrefix(cleaned, "..") || filepath.IsAbs(cleaned) {
 			continue

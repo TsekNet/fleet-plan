@@ -86,15 +86,6 @@ type LabelRef struct {
 	ReferencedBy string // which policy/query references it
 }
 
-func matchesAnyTeam(name string, filters []string) bool {
-	for _, f := range filters {
-		if strings.EqualFold(name, f) {
-			return true
-		}
-	}
-	return false
-}
-
 // ---------- Diff engine ----------
 
 // ScriptEnricher fetches script content for inferred fleet-maintained apps.
@@ -159,7 +150,7 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 	}
 
 	for _, proposedTeam := range proposed.Teams {
-		if len(teamFilters) > 0 && !matchesAnyTeam(proposedTeam.Name, teamFilters) {
+		if len(teamFilters) > 0 && !parser.MatchesAnyTeam(proposedTeam.Name, teamFilters) {
 			continue
 		}
 
@@ -258,22 +249,22 @@ func buildSourceMap(team parser.ParsedTeam) map[string][]string {
 		add(q.Name, q.SourceFile)
 	}
 	for _, p := range team.Software.Packages {
-		key := normalizeSoftwarePath(p.RefPath)
+		key := parser.NormalizeSoftwarePath(p.RefPath)
 		if key == "" {
 			key = inferSoftwarePathFromSource(p.SourceFile)
 		}
 		if key == "" {
-			key = normalizeSoftwarePath(p.URL)
+			key = parser.NormalizeSoftwarePath(p.URL)
 		}
 		if key != "" {
-			add(normalizeSoftwarePath(key), p.SourceFile)
+			add(parser.NormalizeSoftwarePath(key), p.SourceFile)
 			for _, sf := range p.SourceFiles {
-				add(normalizeSoftwarePath(key), sf)
+				add(parser.NormalizeSoftwarePath(key), sf)
 			}
 		}
 	}
 	for _, f := range team.Software.FleetMaintained {
-		slug := normalizeSoftwarePath(f.Slug)
+		slug := parser.NormalizeSoftwarePath(f.Slug)
 		if slug == "" {
 			continue
 		}
@@ -464,9 +455,9 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) Reso
 	// -------- Packages (keyed by referenced_yaml_path) --------
 	currentPkgs := make(map[string]api.TeamSoftwarePackage)
 	for _, p := range current.Packages {
-		key := normalizeSoftwarePath(p.ReferencedYAMLPath)
+		key := parser.NormalizeSoftwarePath(p.ReferencedYAMLPath)
 		if key == "" {
-			key = normalizeSoftwarePath(p.URL)
+			key = parser.NormalizeSoftwarePath(p.URL)
 		}
 		if key != "" {
 			currentPkgs[key] = p
@@ -475,12 +466,12 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) Reso
 
 	proposedPkgs := make(map[string]parser.ParsedSoftwarePackage)
 	for _, p := range proposed.Packages {
-		key := normalizeSoftwarePath(p.RefPath)
+		key := parser.NormalizeSoftwarePath(p.RefPath)
 		if key == "" {
 			key = inferSoftwarePathFromSource(p.SourceFile)
 		}
 		if key == "" {
-			key = normalizeSoftwarePath(p.URL)
+			key = parser.NormalizeSoftwarePath(p.URL)
 		}
 		if key != "" {
 			proposedPkgs[key] = p
@@ -497,7 +488,7 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) Reso
 			if p.HashSHA256 != "" {
 				fields["hash_sha256"] = FieldDiff{New: p.HashSHA256}
 			}
-			rd.Added = append(rd.Added, ResourceChange{Name: normalizeSoftwarePath(key), Fields: fields})
+			rd.Added = append(rd.Added, ResourceChange{Name: parser.NormalizeSoftwarePath(key), Fields: fields})
 			continue
 		}
 		fields := make(map[string]FieldDiff)
@@ -512,81 +503,79 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) Reso
 		}
 		if len(fields) > 0 {
 			rd.Modified = append(rd.Modified, ResourceChange{
-				Name:   normalizeSoftwarePath(key),
+				Name:   parser.NormalizeSoftwarePath(key),
 				Fields: fields,
 			})
 		}
 	}
 	for key := range currentPkgs {
 		if _, exists := proposedPkgs[key]; !exists {
-			rd.Deleted = append(rd.Deleted, ResourceChange{Name: normalizeSoftwarePath(key)})
+			rd.Deleted = append(rd.Deleted, ResourceChange{Name: parser.NormalizeSoftwarePath(key)})
 		}
 	}
 
 	// -------- Fleet-maintained apps (keyed by slug) --------
-	{
-		currentFleet := make(map[string]api.TeamFleetApp)
-		for _, a := range current.FleetMaintained {
-			slug := normalizeSoftwarePath(a.Slug)
-			if slug != "" {
-				currentFleet[slug] = a
-			}
+	currentFleet := make(map[string]api.TeamFleetApp)
+	for _, a := range current.FleetMaintained {
+		slug := parser.NormalizeSoftwarePath(a.Slug)
+		if slug != "" {
+			currentFleet[slug] = a
 		}
-		proposedFleet := make(map[string]parser.ParsedFleetApp)
-		for _, a := range proposed.FleetMaintained {
-			slug := normalizeSoftwarePath(a.Slug)
-			if slug != "" {
-				proposedFleet[slug] = a
-			}
+	}
+	proposedFleet := make(map[string]parser.ParsedFleetApp)
+	for _, a := range proposed.FleetMaintained {
+		slug := parser.NormalizeSoftwarePath(a.Slug)
+		if slug != "" {
+			proposedFleet[slug] = a
 		}
+	}
 
-		for slug, a := range proposedFleet {
-			cur, exists := currentFleet[slug]
-			if !exists {
-				rd.Added = append(rd.Added, ResourceChange{
-					Name: "fleet app " + slug,
-					Fields: map[string]FieldDiff{
-						"slug":         {New: a.Slug},
-						"self_service": {New: fmt.Sprint(a.SelfService)},
-					},
-				})
-				continue
-			}
-			fields := make(map[string]FieldDiff)
-			if cur.SelfService != a.SelfService {
-				fields["self_service"] = FieldDiff{
-					Old: fmt.Sprint(cur.SelfService),
-					New: fmt.Sprint(a.SelfService),
-				}
-			}
-			for _, sc := range []struct {
-				name     string
-				curVal   string
-				newVal   string
-			}{
-				{"install_script", cur.InstallScript, a.InstallScript},
-				{"uninstall_script", cur.UninstallScript, a.UninstallScript},
-				{"pre_install_query", cur.PreInstallQuery, a.PreInstallQuery},
-				{"post_install_script", cur.PostInstallScript, a.PostInstallScript},
-			} {
-				if sc.curVal != "" && sc.newVal != "" &&
-					normalizeScript(sc.curVal) != normalizeScript(sc.newVal) {
-					fields[sc.name] = FieldDiff{
-						New: scriptDiffSummary(normalizeScript(sc.curVal), normalizeScript(sc.newVal)),
-					}
-				}
-			}
-			if len(fields) > 0 {
-				rd.Modified = append(rd.Modified, ResourceChange{
-					Name:   "fleet app " + slug,
-					Fields: fields,
-				})
+	for slug, a := range proposedFleet {
+		cur, exists := currentFleet[slug]
+		if !exists {
+			rd.Added = append(rd.Added, ResourceChange{
+				Name: "fleet app " + slug,
+				Fields: map[string]FieldDiff{
+					"slug":         {New: a.Slug},
+					"self_service": {New: fmt.Sprint(a.SelfService)},
+				},
+			})
+			continue
+		}
+		fields := make(map[string]FieldDiff)
+		if cur.SelfService != a.SelfService {
+			fields["self_service"] = FieldDiff{
+				Old: fmt.Sprint(cur.SelfService),
+				New: fmt.Sprint(a.SelfService),
 			}
 		}
-		for slug := range currentFleet {
-			if _, exists := proposedFleet[slug]; !exists {
-				rd.Deleted = append(rd.Deleted, ResourceChange{Name: "fleet app " + slug})
+		for _, sc := range []struct {
+			name     string
+			curVal   string
+			newVal   string
+		}{
+			{"install_script", cur.InstallScript, a.InstallScript},
+			{"uninstall_script", cur.UninstallScript, a.UninstallScript},
+			{"pre_install_query", cur.PreInstallQuery, a.PreInstallQuery},
+			{"post_install_script", cur.PostInstallScript, a.PostInstallScript},
+		} {
+			if sc.curVal != "" && sc.newVal != "" &&
+				normalizeScript(sc.curVal) != normalizeScript(sc.newVal) {
+				fields[sc.name] = FieldDiff{
+					New: scriptDiffSummary(normalizeScript(sc.curVal), normalizeScript(sc.newVal)),
+				}
 			}
+		}
+		if len(fields) > 0 {
+			rd.Modified = append(rd.Modified, ResourceChange{
+				Name:   "fleet app " + slug,
+				Fields: fields,
+			})
+		}
+	}
+	for slug := range currentFleet {
+		if _, exists := proposedFleet[slug]; !exists {
+			rd.Deleted = append(rd.Deleted, ResourceChange{Name: "fleet app " + slug})
 		}
 	}
 
@@ -640,20 +629,6 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) Reso
 	return rd
 }
 
-func normalizeSoftwarePath(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return ""
-	}
-	s = strings.ReplaceAll(s, "\\", "/")
-	s = strings.TrimPrefix(s, "./")
-	for strings.HasPrefix(s, "../") {
-		s = strings.TrimPrefix(s, "../")
-	}
-	s = strings.TrimPrefix(s, "/")
-	return s
-}
-
 func inferSoftwarePathFromSource(source string) string {
 	source = strings.ReplaceAll(source, "\\", "/")
 	if idx := strings.Index(source, "/software/"); idx >= 0 {
@@ -675,12 +650,12 @@ func mergeFleetApps(apiApps, inferred []api.TeamFleetApp) []api.TeamFleetApp {
 	seen := make(map[string]bool, len(apiApps))
 	merged := make([]api.TeamFleetApp, 0, len(apiApps)+len(inferred))
 	for _, a := range apiApps {
-		slug := normalizeSoftwarePath(a.Slug)
+		slug := parser.NormalizeSoftwarePath(a.Slug)
 		seen[slug] = true
 		merged = append(merged, a)
 	}
 	for _, a := range inferred {
-		slug := normalizeSoftwarePath(a.Slug)
+		slug := parser.NormalizeSoftwarePath(a.Slug)
 		if !seen[slug] {
 			merged = append(merged, a)
 		}
@@ -699,7 +674,7 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp, p
 	// packages are the authoritative set of custom (non-FMA) software.
 	proposedPkgURLs := make(map[string]bool)
 	for _, p := range proposedPackages {
-		u := normalizeSoftwarePath(p.URL)
+		u := parser.NormalizeSoftwarePath(p.URL)
 		if u != "" {
 			proposedPkgURLs[u] = true
 		}
@@ -735,7 +710,7 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp, p
 			continue
 		}
 
-		packageURL := normalizeSoftwarePath(title.SoftwarePackage.PackageURL)
+		packageURL := parser.NormalizeSoftwarePath(title.SoftwarePackage.PackageURL)
 		if packageURL != "" && proposedPkgURLs[packageURL] {
 			continue
 		}
@@ -752,7 +727,7 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp, p
 		// Strategy 1: match by fleet_maintained_app_id (exact, from API).
 		if title.SoftwarePackage.FleetMaintainedAppID != nil {
 			if app, ok := catalogByAppID[*title.SoftwarePackage.FleetMaintainedAppID]; ok {
-				slug := normalizeSoftwarePath(app.Slug)
+				slug := parser.NormalizeSoftwarePath(app.Slug)
 				if slug != "" {
 					record(slug)
 					continue
@@ -762,7 +737,7 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp, p
 
 		// Strategy 2: match by SoftwareTitleID -> catalog SoftwareTitleID.
 		if app, ok := catalogByTitleID[title.ID]; ok {
-			slug := normalizeSoftwarePath(app.Slug)
+			slug := parser.NormalizeSoftwarePath(app.Slug)
 			if slug != "" {
 				record(slug)
 				continue
@@ -791,7 +766,7 @@ func inferFleetMaintainedApps(team api.Team, catalog []api.FleetMaintainedApp, p
 			continue
 		}
 
-		slug := normalizeSoftwarePath(matches[0].Slug)
+		slug := parser.NormalizeSoftwarePath(matches[0].Slug)
 		if slug == "" {
 			continue
 		}

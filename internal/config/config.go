@@ -62,6 +62,11 @@ func loadConfigFile(root string) configFile {
 	if err != nil {
 		return configFile{}
 	}
+	if info, err := os.Stat(path); err == nil {
+		if mode := info.Mode().Perm(); mode&0o077 != 0 {
+			fmt.Fprintf(os.Stderr, "warning: %s is readable by others (mode %04o), consider chmod 600\n", path, mode)
+		}
+	}
 	var cfg configFile
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return configFile{}
