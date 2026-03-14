@@ -13,6 +13,7 @@ All read-only. fleet-plan never writes to your Fleet server.
 | `GET` | `/api/v1/fleet/mdm/profiles` | MDM configuration profiles |
 | `GET` | `/api/v1/fleet/software/titles` | Managed software titles (paginated) |
 | `GET` | `/api/v1/fleet/software/fleet_maintained_apps` | Fleet-maintained app catalog (paginated) |
+| `GET` | `/api/v1/fleet/scripts` | Team scripts for line-count diff (paginated) |
 
 Global endpoints (`/config`, `/global/policies`, `/queries` with teamID=0) are only called when `default.yml` defines global sections.
 

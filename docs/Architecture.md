@@ -126,6 +126,32 @@ vhs assets/demo.tape
 
 ---
 
+## CI mode (`--git`)
+
+When `--git` is active, the `git` package detects the CI platform and drives the diff workflow:
+
+1. **Platform detection:** checks `CI_MERGE_REQUEST_IID` (GitLab CI) or `GITHUB_EVENT_NAME` (GitHub Actions) to determine which API to use for changed-file resolution and comment posting.
+2. **Changed-file resolution** follows a fallback chain:
+   - MR/PR API (preferred): fetch the file list from the GitLab merge request or GitHub pull request API.
+   - `git diff`: if the API call fails or the env vars are missing, fall back to diffing against the merge base locally.
+   - Full diff: if git is unavailable, diff all teams (no file filtering).
+3. **Team scope inference:** `scope.go` maps changed file paths back to `teams/*.yml` entries so only affected teams are diffed.
+4. **Comment posting:** posts (or updates) a Markdown comment on the MR/PR. GitLab uses `FLEET_PLAN_BOT`, GitHub uses `GITHUB_TOKEN`.
+
+---
+
+## Config merge
+
+`--base` + `--env` performs an in-memory YAML merge before diffing:
+
+- The overlay (`--env`) keys win over the base (`--base`) keys.
+- Maps are deep-merged: nested keys in the overlay are merged into the base map recursively.
+- Arrays are replaced: an overlay array replaces the base array entirely (no element-level merge).
+
+This mirrors how fleet-gitops environment overlays work, so the diff reflects the final merged config without writing a temporary file.
+
+---
+
 ## Tests
 
 ```

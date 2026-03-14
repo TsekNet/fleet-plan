@@ -135,7 +135,8 @@ When `--git` is active, fleet-plan:
 | `FLEET_URL` / `FLEET_TOKEN` | Fleet API auth |
 | `FLEET_PLAN_BOT` | GitLab: token for posting MR comments |
 | `GITHUB_TOKEN` | GitHub: token for posting PR comments |
-| `CI_JOB_URL` / `GITHUB_SERVER_URL` | Link back to the pipeline job in the comment |
+| `CI_JOB_URL` / `GITHUB_SERVER_URL` + `GITHUB_REPOSITORY` + `GITHUB_RUN_ID` | Link back to the pipeline job in the comment |
+| `PR_NUMBER` / `GITHUB_PR_NUMBER` / `GITHUB_EVENT_PATH` | PR number detection (fallback order: explicit env vars, then event payload JSON) |
 
 ## Documentation
 
