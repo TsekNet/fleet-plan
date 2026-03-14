@@ -1205,13 +1205,15 @@ func getNestedValue(m map[string]any, key string) string {
 // ---------- Helpers ----------
 
 // scriptDiffSummary returns a human-readable summary of what changed between
-// two normalized script contents. For single-line changes it shows the line
-// number. For multi-line changes it shows insertion/deletion counts.
+// two normalized script contents. Uses a compact "+added/-deleted" format,
+// omitting zero counts. For single-line changes it includes the line number
+// (e.g. "+5", "-3", "~2").
 func scriptDiffSummary(old, new string) string {
 	oldLines := strings.Split(old, "\n")
 	newLines := strings.Split(new, "\n")
 
-	// Build a set of old lines for membership check
+	// Bag-of-lines: count lines present in new but not old (inserted)
+	// and lines present in old but not new (deleted).
 	oldSet := make(map[string]int)
 	for _, l := range oldLines {
 		oldSet[l]++
@@ -1221,7 +1223,6 @@ func scriptDiffSummary(old, new string) string {
 		newSet[l]++
 	}
 
-	// Count insertions (lines in new but not in old) and deletions (lines in old but not in new)
 	inserted := 0
 	for l, count := range newSet {
 		if diff := count - oldSet[l]; diff > 0 {
@@ -1236,7 +1237,7 @@ func scriptDiffSummary(old, new string) string {
 	}
 
 	if inserted+deleted == 1 {
-		// Find the single changed line and show its position
+		// Single change: find its line number.
 		maxLen := len(oldLines)
 		if len(newLines) > maxLen {
 			maxLen = len(newLines)
@@ -1250,18 +1251,27 @@ func scriptDiffSummary(old, new string) string {
 				n = newLines[i]
 			}
 			if o != n {
+				ln := i + 1
 				if o == "" {
-					return fmt.Sprintf("+Line %d", i+1)
+					return fmt.Sprintf("+%d", ln)
 				}
 				if n == "" {
-					return fmt.Sprintf("-Line %d", i+1)
+					return fmt.Sprintf("-%d", ln)
 				}
-				return fmt.Sprintf("~Line %d", i+1)
+				return fmt.Sprintf("~%d", ln)
 			}
 		}
 	}
 
-	return fmt.Sprintf("+%d lines, -%d lines", inserted, deleted)
+	// Compact format, omitting zero counts.
+	var parts []string
+	if inserted > 0 {
+		parts = append(parts, fmt.Sprintf("+%d", inserted))
+	}
+	if deleted > 0 {
+		parts = append(parts, fmt.Sprintf("-%d", deleted))
+	}
+	return strings.Join(parts, "/")
 }
 
 // normalizeScript normalizes a script for comparison: trims whitespace and
