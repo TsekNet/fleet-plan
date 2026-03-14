@@ -11,7 +11,8 @@ import (
 // MarkdownOptions controls optional CI-oriented additions to markdown output.
 type MarkdownOptions struct {
 	Heading string // ## heading text (e.g. "Planned changes for fleet.example.com")
-	Marker string // HTML comment appended for idempotent MR note updates
+	Marker  string // HTML comment appended for idempotent MR note updates
+	JobURL  string // CI pipeline/job URL embedded before the marker
 }
 
 // HasChanges returns true if any DiffResult contains additions, modifications,
@@ -28,9 +29,12 @@ func HasChanges(results []diff.DiffResult) bool {
 	return false
 }
 
-func writeMarker(sb *strings.Builder, marker string) {
-	if marker != "" {
-		sb.WriteString(fmt.Sprintf("\n<!-- %s -->\n", marker))
+func writeMarker(sb *strings.Builder, opts MarkdownOptions) {
+	if opts.JobURL != "" {
+		sb.WriteString(fmt.Sprintf("[View pipeline job](%s)\n", opts.JobURL))
+	}
+	if opts.Marker != "" {
+		sb.WriteString(fmt.Sprintf("\n<!-- %s -->\n", opts.Marker))
 	}
 }
 
@@ -62,7 +66,7 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 
 	if !HasChanges(results) {
 		sb.WriteString("No changes detected. Your branch matches the current Fleet state.\n")
-		writeMarker(&sb, opts.Marker)
+		writeMarker(&sb, opts)
 		return sb.String()
 	}
 
@@ -162,7 +166,7 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 
 	sb.WriteString("\n> **NOTE:** Unexpected changes? Rebase onto the target branch and re-run fleet-plan.\n")
 
-	writeMarker(&sb, opts.Marker)
+	writeMarker(&sb, opts)
 
 	return sb.String()
 }

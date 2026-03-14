@@ -117,7 +117,7 @@ func TestRootFlagsIncludeAllFlags(t *testing.T) {
 	}
 
 	output := buf.String()
-	for _, flag := range []string{"--team", "--default", "--verbose", "--ci-heading", "--ci-marker", "--detailed-exitcode"} {
+	for _, flag := range []string{"--team", "--git", "--base", "--env", "--heading", "--verbose", "--detailed-exitcode"} {
 		if !strings.Contains(output, flag) {
 			t.Errorf("help should mention %s, got:\n%s", flag, output)
 		}
