@@ -37,8 +37,8 @@ fleet-plan --team Workstations
 # Multiple teams
 fleet-plan --team Workstations --team Servers
 
-# Pre-merged default.yml from CI
-fleet-plan --default /tmp/default.yml
+# Merge base + environment overlay
+fleet-plan --base base.yml --env environments/prod.yml
 
 # JSON or Markdown output
 fleet-plan --format json
@@ -81,13 +81,22 @@ fleet-plan --url https://fleet.example.com --token your-token
 
 ## CI integration
 
+Use `--git` to auto-detect the CI platform (GitHub Actions or GitLab CI), resolve changed files from the MR/PR, infer affected teams, and post a diff comment:
+
 ```bash
-# Show what will change
-fleet-plan
+# GitHub Actions / GitLab CI: auto-detect changed files, diff only affected teams
+fleet-plan --git --base base.yml --env environments/prod.yml --format markdown
 
 # Validate server-side
 fleetctl gitops -f default.yml --dry-run
 ```
+
+When `--git` is active, fleet-plan:
+1. Detects the CI platform from environment variables
+2. Fetches the list of changed files from the MR/PR API (or falls back to `git diff`)
+3. Resolves which teams reference those files
+4. Diffs only the affected teams and global config
+5. Posts (or updates) a comment on the MR/PR with the diff
 
 ## Documentation
 

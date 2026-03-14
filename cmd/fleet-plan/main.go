@@ -8,6 +8,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -15,6 +17,8 @@ import (
 	"github.com/TsekNet/fleet-plan/internal/api"
 	"github.com/TsekNet/fleet-plan/internal/config"
 	"github.com/TsekNet/fleet-plan/internal/diff"
+	"github.com/TsekNet/fleet-plan/internal/envmerge"
+	"github.com/TsekNet/fleet-plan/internal/gitci"
 	"github.com/TsekNet/fleet-plan/internal/output"
 	"github.com/TsekNet/fleet-plan/internal/parser"
 )
@@ -35,11 +39,13 @@ var (
 	flagNoColor          bool
 	flagVerbose          bool
 	flagTeams            []string
-	flagDefault          string
-	flagCIHeading        string
-	flagCIMarker         string
+	flagHeading          string
 	flagDetailedExitCode bool
-	flagChangedFiles     []string
+
+	// --git mode flags.
+	flagGit  bool
+	flagBase string
+	flagEnv  string
 )
 
 // buildRootCmd constructs the root cobra.Command with all subcommands and flags.
@@ -63,11 +69,13 @@ Strictly read-only -- GET requests only.`,
 	pf.BoolVar(&flagNoColor, "no-color", false, "disable color output")
 	pf.BoolVarP(&flagVerbose, "verbose", "v", false, "show full old/new values for modified fields")
 	pf.StringSliceVar(&flagTeams, "team", nil, "diff only these teams (repeatable, default: all)")
-	pf.StringVar(&flagDefault, "default", "", "path to default.yml (overrides auto-detection)")
-	pf.StringVar(&flagCIHeading, "ci-heading", "", "## heading for markdown output (CI use)")
-	pf.StringVar(&flagCIMarker, "ci-marker", "", "HTML comment marker appended to markdown output for idempotent MR note updates")
+	pf.StringVar(&flagHeading, "heading", "", "## heading for markdown output")
 	pf.BoolVar(&flagDetailedExitCode, "detailed-exitcode", false, "exit 2 when changes detected (0=no changes, 1=error, 2=changes)")
-	pf.StringSliceVar(&flagChangedFiles, "changed-file", nil, "only show diffs for resources from these source files (repeatable, CI use)")
+
+	// --git mode.
+	pf.BoolVar(&flagGit, "git", false, "enable CI mode: auto-detect changed files, infer affected teams, post MR/PR comment")
+	pf.StringVar(&flagBase, "base", "", "path to base.yml for multi-env config merge (use with --env)")
+	pf.StringVar(&flagEnv, "env", "", "path to environment overlay YAML, merged with --base in-memory")
 
 	root.AddCommand(versionCmd())
 
@@ -90,14 +98,40 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("repo path %q is not a directory", flagRepo)
 	}
 
-	repo, err := parser.ParseRepo(flagRepo, flagTeams, flagDefault)
+	// Resolve the default.yml path: merge base+env if provided, else auto-detect.
+	defaultFile, cleanup, err := resolveDefaultFile(flagRepo, flagBase, flagEnv)
+	if err != nil {
+		return err
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+
+	// --git: detect CI context, resolve changed files + affected teams.
+	var changedFiles []string
+	var ci gitci.Env
+	teams := flagTeams
+
+	if flagGit {
+		ci = gitci.Detect()
+		resolved, skip := resolveCIScope(ci, flagRepo, flagEnv, &defaultFile, teams)
+		if skip {
+			return nil
+		}
+		changedFiles = resolved.ChangedFiles
+		if len(resolved.Teams) > 0 && len(teams) == 0 {
+			teams = resolved.Teams
+		}
+	}
+
+	repo, err := parser.ParseRepo(flagRepo, teams, defaultFile)
 	if err != nil {
 		return fmt.Errorf("parsing repo: %w", err)
 	}
 
 	if len(repo.Teams) == 0 && len(repo.Errors) == 0 {
-		if len(flagTeams) > 0 {
-			return fmt.Errorf("no teams matching %v found in %s/teams/", flagTeams, flagRepo)
+		if len(teams) > 0 {
+			return fmt.Errorf("no teams matching %v found in %s/teams/", teams, flagRepo)
 		}
 		return fmt.Errorf("no teams found in %s/teams/\nAre you in a fleet-gitops repo? Try --repo /path/to/repo", flagRepo)
 	}
@@ -116,11 +150,13 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	results := diff.Diff(state, repo, flagTeams, flagChangedFiles,
+	results := diff.Diff(state, repo, teams, changedFiles,
 		diff.WithScriptEnricher(client))
 	elapsed := time.Since(start)
 
 	hasChanges := output.HasChanges(results)
+
+	const marker = "fleet-plan-marker"
 
 	switch flagFormat {
 	case "json":
@@ -130,11 +166,27 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 		}
 		fmt.Println(out)
 	case "markdown":
-		opts := output.MarkdownOptions{
-			Heading: flagCIHeading,
-			Marker:  flagCIMarker,
+		heading := flagHeading
+		if heading == "" && flagGit {
+			heading = buildHeading(auth.URL)
 		}
-		fmt.Println(output.RenderDiffMarkdown(results, opts))
+
+		mdBody := output.RenderDiffMarkdown(results, output.MarkdownOptions{
+			Heading: heading,
+			Marker:  marker,
+			JobURL:  ci.JobURL(),
+		})
+		fmt.Println(mdBody)
+
+		if flagGit && hasChanges && ci.Platform != gitci.PlatformUnknown {
+			commentURL, err := ci.PostOrUpdateComment(mdBody, marker)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not post MR comment: %v\n", err)
+				fmt.Fprintln(os.Stderr, "The diff is printed above.")
+			} else {
+				fmt.Fprintf(os.Stderr, "MR comment posted: %s\n", commentURL)
+			}
+		}
 	default:
 		fmt.Println(output.RenderDiffTerminal(results, flagVerbose))
 	}
@@ -146,6 +198,85 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 	}
 
 	return nil
+}
+
+// resolveDefaultFile returns the path to default.yml to pass to ParseRepo.
+// If base+env are provided, they are merged into a temp file and a cleanup
+// func is returned to delete it. If neither is provided, returns empty string
+// (ParseRepo will auto-detect).
+func resolveDefaultFile(repo, base, env string) (path string, cleanup func(), err error) {
+	if base == "" && env == "" {
+		return "", nil, nil
+	}
+	if base == "" || env == "" {
+		return "", nil, fmt.Errorf("--base and --env must be used together")
+	}
+
+	// Resolve relative to repo root if not absolute.
+	if !filepath.IsAbs(base) {
+		base = filepath.Join(repo, base)
+	}
+	if !filepath.IsAbs(env) {
+		env = filepath.Join(repo, env)
+	}
+
+	tmp, err := os.CreateTemp("", "fleet-plan-default-*.yml")
+	if err != nil {
+		return "", nil, fmt.Errorf("creating temp file for merged config: %w", err)
+	}
+	tmpPath := tmp.Name()
+	tmp.Close()
+
+	if err := envmerge.MergeFiles(base, env, tmpPath); err != nil {
+		os.Remove(tmpPath)
+		return "", nil, fmt.Errorf("merging base+env: %w", err)
+	}
+
+	return tmpPath, func() { os.Remove(tmpPath) }, nil
+}
+
+// buildHeading returns the default CI heading using the Fleet server URL.
+func buildHeading(fleetURL string) string {
+	display := strings.TrimPrefix(fleetURL, "https://")
+	return fmt.Sprintf("Planned changes for [%s](%s)", display, fleetURL)
+}
+
+// resolveCIScope detects the CI platform, fetches changed files, and resolves
+// affected teams. Returns the scope and whether the caller should skip the diff
+// (no fleet-relevant files changed). Updates defaultFile in place if global
+// config is affected and no default was explicitly provided.
+func resolveCIScope(ci gitci.Env, repo, envFile string, defaultFile *string, explicitTeams []string) (gitci.Scope, bool) {
+	if ci.Platform == gitci.PlatformUnknown {
+		fmt.Fprintln(os.Stderr, "Warning: --git specified but no CI MR/PR context detected; running full diff")
+		return gitci.Scope{}, false
+	}
+
+	files, err := ci.ChangedFiles()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not determine changed files (%v); running full diff\n", err)
+		return gitci.Scope{}, false
+	}
+
+	scope := gitci.ResolveScope(repo, files, envFile)
+	if !scope.IncludeGlobal && len(scope.Teams) == 0 {
+		fmt.Fprintln(os.Stderr, "No fleet-relevant files changed in this MR, skipping diff.")
+		return scope, true
+	}
+
+	if scope.IncludeGlobal && *defaultFile == "" {
+		candidate := filepath.Join(repo, "default.yml")
+		if _, err := os.Stat(candidate); err == nil {
+			*defaultFile = candidate
+		}
+	}
+
+	if len(scope.Teams) > 0 && len(explicitTeams) == 0 {
+		for _, t := range scope.Teams {
+			fmt.Fprintf(os.Stderr, "Affected team: %s\n", t)
+		}
+	}
+
+	return scope, false
 }
 
 func main() {
