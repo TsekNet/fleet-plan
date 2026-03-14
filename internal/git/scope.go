@@ -8,6 +8,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// fleetResourcePrefixes lists the directory prefixes for fleet-managed resources.
+var fleetResourcePrefixes = []string{"policies/", "queries/", "software/", "profiles/", "scripts/"}
+
 // Scope describes which parts of the repo are affected by a set of changed files.
 type Scope struct {
 	// IncludeGlobal is true when base.yml, an environment overlay, or labels/ changed.
@@ -26,7 +29,8 @@ func ResolveScope(root string, changedFiles []string, envFile string) Scope {
 	var scope Scope
 
 	for _, f := range changedFiles {
-		if strings.Contains(f, "..") {
+		cleaned := filepath.Clean(f)
+		if strings.HasPrefix(cleaned, "..") || filepath.IsAbs(cleaned) {
 			continue
 		}
 		switch {
@@ -60,7 +64,7 @@ func ResolveScope(root string, changedFiles []string, envFile string) Scope {
 
 // isFleetResource returns true for files under the fleet-managed resource dirs.
 func isFleetResource(f string) bool {
-	for _, prefix := range []string{"policies/", "queries/", "software/", "profiles/", "scripts/"} {
+	for _, prefix := range fleetResourcePrefixes {
 		if strings.HasPrefix(f, prefix) {
 			return true
 		}

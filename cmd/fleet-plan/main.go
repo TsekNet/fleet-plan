@@ -178,7 +178,7 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 		})
 		fmt.Println(mdBody)
 
-		if flagGit && hasChanges && ci.Platform != git.PlatformUnknown {
+		if flagGit && ci.Platform != git.PlatformUnknown {
 			commentURL, err := ci.PostOrUpdateComment(mdBody, marker)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: could not post MR comment: %v\n", err)

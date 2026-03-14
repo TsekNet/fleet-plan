@@ -1,4 +1,4 @@
-// Package envmerge merges a base YAML config with an environment overlay,
+// Package merge merges a base YAML config with an environment overlay,
 // equivalent to: yq eval-all '. as $item ireduce ({}; . *+ $item)' base.yml env.yml
 package merge
 
