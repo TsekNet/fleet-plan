@@ -164,7 +164,7 @@ func RenderDiffMarkdown(results []diff.DiffResult, opts MarkdownOptions) string 
 		sb.WriteString(fmt.Sprintf("\n⚠️ %s\n", warning))
 	}
 
-	sb.WriteString("\n> **NOTE:** Unexpected changes? Rebase onto the target branch and re-run fleet-plan.\n")
+	sb.WriteString("\n> **NOTE:** Unexpected changes? Rebase, or confirm that changes have been deployed to Fleet.\n")
 
 	writeMarker(&sb, opts)
 
