@@ -104,13 +104,9 @@ func collectBaselineFiles(repoRoot, baseRef string, changedFiles []string) []str
 		}
 	}
 
-	// Also include default.yml and base.yml if they exist, since the parser
-	// may need them for global config context.
-	for _, f := range []string{"default.yml", "base.yml"} {
-		if _, err := gitShow(repoRoot, baseRef, f); err == nil {
-			add(f)
-		}
-	}
+	// Only include default.yml/base.yml if they're already in changedFiles.
+	// Extracting them unconditionally causes over-subtraction for MRs that
+	// don't touch global config.
 
 	return result
 }

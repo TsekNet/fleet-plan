@@ -125,7 +125,7 @@ func TestCheckoutBaseline_ExtractsFiles(t *testing.T) {
 	}
 }
 
-func TestCollectBaselineFiles_IncludesDefaultYml(t *testing.T) {
+func TestCollectBaselineFiles_OnlyIncludesChangedFiles(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -140,8 +140,17 @@ func TestCollectBaselineFiles_IncludesDefaultYml(t *testing.T) {
 	gitRun(t, dir, "commit", "-m", "init")
 
 	sha := gitOutput(t, dir, "rev-parse", "HEAD")
-	files := collectBaselineFiles(dir, sha, []string{"teams/test.yml"})
 
+	// default.yml not in changedFiles, should NOT be collected.
+	files := collectBaselineFiles(dir, sha, []string{"teams/test.yml"})
+	for _, f := range files {
+		if f == "default.yml" {
+			t.Errorf("default.yml should not be collected when not in changedFiles, got: %v", files)
+		}
+	}
+
+	// default.yml in changedFiles, should be collected.
+	files = collectBaselineFiles(dir, sha, []string{"default.yml"})
 	found := false
 	for _, f := range files {
 		if f == "default.yml" {
@@ -149,7 +158,7 @@ func TestCollectBaselineFiles_IncludesDefaultYml(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("expected default.yml in collected files, got: %v", files)
+		t.Errorf("expected default.yml when in changedFiles, got: %v", files)
 	}
 }
 
