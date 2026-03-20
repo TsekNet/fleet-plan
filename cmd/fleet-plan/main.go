@@ -136,6 +136,24 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("no teams found in %s/teams/\nAre you in a fleet-gitops repo? Try --repo /path/to/repo", flagRepo)
 	}
 
+	// Parse baseline (base branch) for subtraction when in --git mode.
+	var baseline *parser.ParsedRepo
+	if flagGit && len(changedFiles) > 0 && ci.DiffBaseSHA != "" {
+		baseRoot, baseCleanup, err := git.CheckoutBaseline(flagRepo, ci.DiffBaseSHA, changedFiles)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not extract baseline (%v), skipping baseline subtraction\n", err)
+		} else {
+			defer baseCleanup()
+			baseDefaultFile := resolveBaselineDefault(baseRoot, flagBase, flagEnv)
+			baseParsed, err := parser.ParseRepo(baseRoot, teams, baseDefaultFile)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not parse baseline (%v), skipping baseline subtraction\n", err)
+			} else {
+				baseline = baseParsed
+			}
+		}
+	}
+
 	client, err := api.NewClient(auth.URL, auth.Token)
 	if err != nil {
 		return err
@@ -149,8 +167,11 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	results := diff.Diff(state, repo, teams, changedFiles,
-		diff.WithScriptEnricher(client))
+	diffOpts := []diff.DiffOption{diff.WithScriptEnricher(client)}
+	if baseline != nil {
+		diffOpts = append(diffOpts, diff.WithBaseline(baseline))
+	}
+	results := diff.Diff(state, repo, teams, changedFiles, diffOpts...)
 	elapsed := time.Since(start)
 
 	hasChanges := output.HasChanges(results)
@@ -232,6 +253,21 @@ func resolveDefaultFile(repo, base, env string) (path string, cleanup func(), er
 	}
 
 	return tmpPath, func() { os.Remove(tmpPath) }, nil
+}
+
+// resolveBaselineDefault returns the path to default.yml within the baseline
+// temp dir, if it exists. For baseline parsing, we use the base branch's own
+// default.yml (no merge with env overlay, since the overlay may have changed
+// in the MR).
+func resolveBaselineDefault(baseRoot, base, env string) string {
+	// If base+env merge was used, check if default.yml exists in the baseline.
+	if base != "" && env != "" {
+		candidate := filepath.Join(baseRoot, "default.yml")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // buildHeading returns the default CI heading using the Fleet server URL.
