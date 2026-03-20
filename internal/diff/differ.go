@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -149,7 +150,12 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 		globalResult.Queries = diffQueries(current.GlobalQueries, proposed.Global.Queries)
 
 		// Subtract baseline for global scope
+		if cfg.baseline != nil && cfg.baseline.Global == nil {
+			fmt.Fprintln(os.Stderr, "Warning: baseline has no global config, skipping global baseline subtraction")
+		}
 		if cfg.baseline != nil && cfg.baseline.Global != nil {
+			fmt.Fprintf(os.Stderr, "Baseline global: %d policies, %d queries\n",
+				len(cfg.baseline.Global.Policies), len(cfg.baseline.Global.Queries))
 			var baseConfig []ConfigChange
 			if current.Config != nil {
 				baseConfig, _ = diffConfig(current.Config, cfg.baseline.Global)
