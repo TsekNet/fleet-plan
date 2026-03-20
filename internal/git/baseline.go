@@ -77,10 +77,11 @@ func collectBaselineFiles(repoRoot, baseRef string, changedFiles []string) []str
 		add(f)
 	}
 
-	// For each team file, extract it from base ref and scan for path: references.
-	// Also extract any referenced resource files so the parser can resolve them.
+	// For each team or config file, extract it from base ref and scan for path:
+	// references. Also extract any referenced resource files so the parser can
+	// resolve them.
 	for _, f := range changedFiles {
-		if !strings.HasPrefix(f, "teams/") {
+		if !strings.HasPrefix(f, "teams/") && f != "base.yml" && f != "default.yml" {
 			continue
 		}
 		content, err := gitShow(repoRoot, baseRef, f)
