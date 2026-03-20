@@ -280,9 +280,11 @@ func buildSourceMap(team parser.ParsedTeam) map[string][]string {
 	}
 	for _, p := range team.Policies {
 		add(p.Name, p.SourceFile)
+		add(p.Name, team.SourceFile)
 	}
 	for _, q := range team.Queries {
 		add(q.Name, q.SourceFile)
+		add(q.Name, team.SourceFile)
 	}
 	for _, p := range team.Software.Packages {
 		key := parser.NormalizeSoftwarePath(p.RefPath)
@@ -294,6 +296,7 @@ func buildSourceMap(team parser.ParsedTeam) map[string][]string {
 		}
 		if key != "" {
 			add(parser.NormalizeSoftwarePath(key), p.SourceFile)
+			add(parser.NormalizeSoftwarePath(key), team.SourceFile)
 			for _, sf := range p.SourceFiles {
 				add(parser.NormalizeSoftwarePath(key), sf)
 			}
@@ -312,9 +315,11 @@ func buildSourceMap(team parser.ParsedTeam) map[string][]string {
 	}
 	for _, p := range team.Profiles {
 		add(p.Name, p.SourceFile)
+		add(p.Name, team.SourceFile)
 	}
 	for _, s := range team.Scripts {
 		add(s.Name, s.SourceFile)
+		add(s.Name, team.SourceFile)
 	}
 	return m
 }
