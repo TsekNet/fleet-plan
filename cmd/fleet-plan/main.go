@@ -240,7 +240,9 @@ func resolveDefaultFile(repo, base, env string) (path string, cleanup func(), er
 		env = filepath.Join(repo, env)
 	}
 
-	tmp, err := os.CreateTemp("", "fleet-plan-default-*.yml")
+	// Place the merged file inside the repo so the parser resolves path:
+	// references (./queries/...) relative to the repo root, not /tmp.
+	tmp, err := os.CreateTemp(repo, ".fleet-plan-default-*.yml")
 	if err != nil {
 		return "", nil, fmt.Errorf("creating temp file for merged config: %w", err)
 	}
