@@ -145,20 +145,10 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 		} else {
 			defer baseCleanup()
 			baseDefaultFile := resolveBaselineDefault(baseRoot, flagRepo, flagBase, flagEnv)
-			fmt.Fprintf(os.Stderr, "Baseline default file: %q\n", baseDefaultFile)
 			baseParsed, err := parser.ParseRepo(baseRoot, teams, baseDefaultFile)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: could not parse baseline (%v), skipping baseline subtraction\n", err)
 			} else {
-				if baseParsed.Global == nil {
-					fmt.Fprintf(os.Stderr, "Warning: baseline parsed but Global is nil (defaultFile=%q)\n", baseDefaultFile)
-				} else {
-					fmt.Fprintf(os.Stderr, "Baseline global parsed: %d policies, %d queries\n",
-						len(baseParsed.Global.Policies), len(baseParsed.Global.Queries))
-				}
-				if len(baseParsed.Errors) > 0 {
-					fmt.Fprintf(os.Stderr, "Baseline parse errors: %v\n", baseParsed.Errors)
-				}
 				baseline = baseParsed
 			}
 		}

@@ -26,6 +26,9 @@ func CheckoutBaseline(repoRoot string, baseRef string, files []string) (tmpRoot 
 	}
 	cleanup = func() { os.RemoveAll(tmpRoot) }
 
+	// Ensure teams/ directory exists so ParseRepo doesn't bail early.
+	os.MkdirAll(filepath.Join(tmpRoot, "teams"), 0o755)
+
 	// Resolve which files we need: the explicitly changed files, plus any
 	// files they reference (path: directives in team YAML). We start with
 	// the team files themselves, then do a second pass for references.
