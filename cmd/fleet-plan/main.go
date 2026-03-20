@@ -274,18 +274,12 @@ func resolveBaselineDefault(baseRoot, repoRoot, base, env string) string {
 		if _, err := os.Stat(envFile); err != nil {
 			return ""
 		}
-		tmp, err := os.CreateTemp("", "fleet-plan-baseline-default-*.yml")
-		if err != nil {
-			return ""
-		}
-		tmpPath := tmp.Name()
-		tmp.Close()
+		// Place the merged file inside the baseline temp dir so the parser
+		// resolves path: refs (./queries/...) relative to the baseline root.
+		tmpPath := filepath.Join(baseRoot, "default.yml")
 		if err := merge.MergeFiles(baseFile, envFile, tmpPath); err != nil {
-			os.Remove(tmpPath)
 			return ""
 		}
-		// Note: this temp file leaks if the caller doesn't clean it up.
-		// It's small and short-lived (CI job lifetime), acceptable tradeoff.
 		return tmpPath
 	}
 	// No base+env: check for plain default.yml in the baseline.
