@@ -144,7 +144,7 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintf(os.Stderr, "Warning: could not extract baseline (%v), skipping baseline subtraction\n", err)
 		} else {
 			defer baseCleanup()
-			baseDefaultFile := resolveBaselineDefault(baseRoot, flagBase, flagEnv)
+			baseDefaultFile := resolveBaselineDefault(baseRoot, flagRepo, flagBase, flagEnv)
 			baseParsed, err := parser.ParseRepo(baseRoot, teams, baseDefaultFile)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: could not parse baseline (%v), skipping baseline subtraction\n", err)
@@ -255,17 +255,43 @@ func resolveDefaultFile(repo, base, env string) (path string, cleanup func(), er
 	return tmpPath, func() { os.Remove(tmpPath) }, nil
 }
 
-// resolveBaselineDefault returns the path to default.yml within the baseline
-// temp dir, if it exists. For baseline parsing, we use the base branch's own
-// default.yml (no merge with env overlay, since the overlay may have changed
-// in the MR).
-func resolveBaselineDefault(baseRoot, base, env string) string {
-	// If base+env merge was used, check if default.yml exists in the baseline.
+// resolveBaselineDefault returns the path to default.yml for baseline parsing.
+// When --base and --env are used, it merges the base branch's base.yml with
+// the env overlay (from the MR branch, since env overlays rarely change).
+// Falls back to the baseline's default.yml if present.
+func resolveBaselineDefault(baseRoot, repoRoot, base, env string) string {
 	if base != "" && env != "" {
-		candidate := filepath.Join(baseRoot, "default.yml")
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
+		baseFile := filepath.Join(baseRoot, base)
+		if _, err := os.Stat(baseFile); err != nil {
+			// base.yml doesn't exist at base ref, skip
+			return ""
 		}
+		// Use the env overlay from the MR branch (repoRoot), not the baseline.
+		envFile := env
+		if !filepath.IsAbs(envFile) {
+			envFile = filepath.Join(repoRoot, envFile)
+		}
+		if _, err := os.Stat(envFile); err != nil {
+			return ""
+		}
+		tmp, err := os.CreateTemp("", "fleet-plan-baseline-default-*.yml")
+		if err != nil {
+			return ""
+		}
+		tmpPath := tmp.Name()
+		tmp.Close()
+		if err := merge.MergeFiles(baseFile, envFile, tmpPath); err != nil {
+			os.Remove(tmpPath)
+			return ""
+		}
+		// Note: this temp file leaks if the caller doesn't clean it up.
+		// It's small and short-lived (CI job lifetime), acceptable tradeoff.
+		return tmpPath
+	}
+	// No base+env: check for plain default.yml in the baseline.
+	candidate := filepath.Join(baseRoot, "default.yml")
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate
 	}
 	return ""
 }

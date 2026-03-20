@@ -148,6 +148,20 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 		// Diff global queries
 		globalResult.Queries = diffQueries(current.GlobalQueries, proposed.Global.Queries)
 
+		// Subtract baseline for global scope
+		if cfg.baseline != nil && cfg.baseline.Global != nil {
+			var baseConfig []ConfigChange
+			if current.Config != nil {
+				baseConfig, _ = diffConfig(current.Config, cfg.baseline.Global)
+			}
+			basePolicies := diffPolicies(current.GlobalPolicies, cfg.baseline.Global.Policies)
+			baseQueries := diffQueries(current.GlobalQueries, cfg.baseline.Global.Queries)
+
+			globalResult.Config = subtractConfigChanges(globalResult.Config, baseConfig)
+			globalResult.Policies = subtractResourceDiff(globalResult.Policies, basePolicies)
+			globalResult.Queries = subtractResourceDiff(globalResult.Queries, baseQueries)
+		}
+
 		results = append(results, globalResult)
 	}
 
@@ -435,6 +449,26 @@ func sameFieldDiffs(a, b map[string]FieldDiff) bool {
 		}
 	}
 	return true
+}
+
+// subtractConfigChanges removes ConfigChange entries from "total" that also
+// appear in "baseline" with the same Section, Key, Old, and New values.
+func subtractConfigChanges(total, baseline []ConfigChange) []ConfigChange {
+	if len(baseline) == 0 {
+		return total
+	}
+	type configKey struct{ Section, Key, Old, New string }
+	baseSet := make(map[configKey]bool, len(baseline))
+	for _, b := range baseline {
+		baseSet[configKey{b.Section, b.Key, b.Old, b.New}] = true
+	}
+	var out []ConfigChange
+	for _, c := range total {
+		if !baseSet[configKey{c.Section, c.Key, c.Old, c.New}] {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // ---------- Per-resource diffing ----------
