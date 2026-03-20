@@ -100,11 +100,20 @@ type DiffOption func(*diffOptions)
 
 type diffOptions struct {
 	enricher ScriptEnricher
+	baseline *parser.ParsedRepo
 }
 
 // WithScriptEnricher enables script-level diffing for fleet-maintained apps.
 func WithScriptEnricher(e ScriptEnricher) DiffOption {
 	return func(o *diffOptions) { o.enricher = e }
+}
+
+// WithBaseline provides a parsed base-branch repo. When set, Diff subtracts
+// changes that already exist between the base branch and Fleet (i.e. changes
+// merged to main but not yet deployed) so that only the incremental changes
+// introduced by the current MR are reported.
+func WithBaseline(b *parser.ParsedRepo) DiffOption {
+	return func(o *diffOptions) { o.baseline = b }
 }
 
 // Diff computes the diff between current Fleet state and proposed YAML for all
@@ -228,6 +237,30 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 			result.Scripts = filterResourceDiff(result.Scripts, sourceNames, changedFiles)
 		}
 
+		// Subtract baseline: remove changes that already exist between the
+		// base branch and Fleet (merged but not yet deployed).
+		if cfg.baseline != nil && exists {
+			if baseTeam, ok := findBaselineTeam(cfg.baseline, proposedTeam.Name); ok {
+				baseDiff := DiffResult{}
+				baseDiff.Policies = diffPolicies(currentTeam.Policies, baseTeam.Policies)
+				baseDiff.Queries = diffQueries(currentTeam.Queries, baseTeam.Queries)
+				if !currentTeam.SoftwareUnavailable {
+					baseDiff.Software = diffSoftware(currentTeam.Software, baseTeam.Software)
+				}
+				if !currentTeam.ProfilesUnavailable {
+					baseDiff.Profiles, _ = diffProfiles(currentTeam.Profiles, baseTeam.Profiles)
+				}
+				if !currentTeam.ScriptsUnavailable {
+					baseDiff.Scripts = diffScripts(currentTeam.Scripts, baseTeam.Scripts)
+				}
+				result.Policies = subtractResourceDiff(result.Policies, baseDiff.Policies)
+				result.Queries = subtractResourceDiff(result.Queries, baseDiff.Queries)
+				result.Software = subtractResourceDiff(result.Software, baseDiff.Software)
+				result.Profiles = subtractResourceDiff(result.Profiles, baseDiff.Profiles)
+				result.Scripts = subtractResourceDiff(result.Scripts, baseDiff.Scripts)
+			}
+		}
+
 		result.Labels = validateLabels(proposedTeam, labelMap, changedNames(result.Policies))
 		results = append(results, result)
 	}
@@ -313,6 +346,87 @@ func filterChanges(changes []ResourceChange, keep func(string) bool) []ResourceC
 		}
 	}
 	return out
+}
+
+// ---------- Baseline subtraction ----------
+
+// findBaselineTeam looks up a team by name in the baseline parsed repo.
+func findBaselineTeam(baseline *parser.ParsedRepo, name string) (parser.ParsedTeam, bool) {
+	for _, t := range baseline.Teams {
+		if strings.EqualFold(t.Name, name) {
+			return t, true
+		}
+	}
+	return parser.ParsedTeam{}, false
+}
+
+// subtractResourceDiff removes changes from "total" that also appear in
+// "baseline". A change is considered the same if it has the same Name and
+// change type (added/modified/deleted).
+//
+// For modified resources, if the resource appears in both diffs but with
+// different field changes, it is kept (the MR introduced additional changes
+// beyond what the baseline already had).
+func subtractResourceDiff(total, baseline ResourceDiff) ResourceDiff {
+	return ResourceDiff{
+		Added:    subtractChanges(total.Added, baseline.Added),
+		Modified: subtractModified(total.Modified, baseline.Modified),
+		Deleted:  subtractChanges(total.Deleted, baseline.Deleted),
+	}
+}
+
+// subtractChanges removes entries from "total" whose Name matches an entry in
+// "baseline". Used for Added and Deleted lists where name-match is sufficient.
+func subtractChanges(total, baseline []ResourceChange) []ResourceChange {
+	if len(baseline) == 0 {
+		return total
+	}
+	baseNames := make(map[string]bool, len(baseline))
+	for _, b := range baseline {
+		baseNames[b.Name] = true
+	}
+	var out []ResourceChange
+	for _, c := range total {
+		if !baseNames[c.Name] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// subtractModified removes entries from "total" that have the exact same field
+// diffs in "baseline". If a resource is modified in both but with different
+// fields or values, it is kept (the MR changed it further).
+func subtractModified(total, baseline []ResourceChange) []ResourceChange {
+	if len(baseline) == 0 {
+		return total
+	}
+	baseFields := make(map[string]map[string]FieldDiff, len(baseline))
+	for _, b := range baseline {
+		baseFields[b.Name] = b.Fields
+	}
+	var out []ResourceChange
+	for _, c := range total {
+		bf, exists := baseFields[c.Name]
+		if !exists || !sameFieldDiffs(c.Fields, bf) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// sameFieldDiffs returns true if two field diff maps are identical.
+func sameFieldDiffs(a, b map[string]FieldDiff) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		bv, ok := b[k]
+		if !ok || av.Old != bv.Old || av.New != bv.New {
+			return false
+		}
+	}
+	return true
 }
 
 // ---------- Per-resource diffing ----------
