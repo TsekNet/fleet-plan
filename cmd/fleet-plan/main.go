@@ -110,6 +110,7 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 	// --git: detect CI context, resolve changed files + affected teams.
 	var changedFiles []string
 	var ci git.Env
+	var includeGlobal bool
 	teams := flagTeams
 
 	if flagGit {
@@ -119,6 +120,7 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 			return nil
 		}
 		changedFiles = resolved.ChangedFiles
+		includeGlobal = resolved.IncludeGlobal
 		if len(resolved.Teams) > 0 && len(teams) == 0 {
 			teams = resolved.Teams
 		}
@@ -167,7 +169,7 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	diffOpts := []diff.DiffOption{diff.WithScriptEnricher(client), diff.WithVerbose(flagVerbose)}
+	diffOpts := []diff.DiffOption{diff.WithScriptEnricher(client), diff.WithVerbose(flagVerbose), diff.WithIncludeGlobal(includeGlobal)}
 	if baseline != nil {
 		diffOpts = append(diffOpts, diff.WithBaseline(baseline))
 	}

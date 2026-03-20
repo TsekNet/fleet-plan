@@ -100,9 +100,10 @@ type ScriptEnricher interface {
 type DiffOption func(*diffOptions)
 
 type diffOptions struct {
-	enricher ScriptEnricher
-	baseline *parser.ParsedRepo
-	verbose  bool
+	enricher     ScriptEnricher
+	baseline     *parser.ParsedRepo
+	verbose      bool
+	includeGlobal bool
 }
 
 // WithScriptEnricher enables script-level diffing for fleet-maintained apps.
@@ -113,6 +114,12 @@ func WithScriptEnricher(e ScriptEnricher) DiffOption {
 // WithVerbose enables detailed stderr logging of baseline subtraction.
 func WithVerbose(v bool) DiffOption {
 	return func(o *diffOptions) { o.verbose = v }
+}
+
+// WithIncludeGlobal forces global config diffing even when team filters are
+// set. Used in --git mode when both global and team files changed.
+func WithIncludeGlobal(v bool) DiffOption {
+	return func(o *diffOptions) { o.includeGlobal = v }
 }
 
 // WithBaseline provides a parsed base-branch repo. When set, Diff subtracts
@@ -175,7 +182,7 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 		cfg.baseline != nil, cfg.baseline != nil && cfg.baseline.Global != nil, teamFilters, changedFiles)
 
 	// --- Global config diff (default.yml) ---
-	if proposed.Global != nil && len(teamFilters) == 0 {
+	if proposed.Global != nil && (len(teamFilters) == 0 || cfg.includeGlobal) {
 		vlog(cfg.verbose, "(global) proposed: %d policies, %d queries", len(proposed.Global.Policies), len(proposed.Global.Queries))
 		vlog(cfg.verbose, "(global) fleet: %d policies, %d queries", len(current.GlobalPolicies), len(current.GlobalQueries))
 		globalResult := DiffResult{Team: "(global)"}
