@@ -193,11 +193,14 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 			result.Policies = diffPolicies(currentTeam.Policies, proposedTeam.Policies)
 			result.Queries = diffQueries(currentTeam.Queries, proposedTeam.Queries)
 
+			// enrichedSoftware holds the API software state with fleet-maintained
+			// app scripts populated. Hoisted here so the baseline subtraction
+			// can reuse the same enriched state.
+			enrichedSoftware := currentTeam.Software
+
 			if currentTeam.SoftwareUnavailable {
 				result.Errors = append(result.Errors, "software diff skipped: API token lacks permission to read software titles")
 			} else {
-				currentSoftware := currentTeam.Software
-
 				// Fleet's /teams API may return fleet_maintained_apps: null, or
 				// return a partial list (e.g., only macOS FMAs while Windows FMAs
 				// are merged into packages). Infer from software titles + catalog
@@ -207,10 +210,10 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 					if cfg.enricher != nil && len(inferred) > 0 {
 						cfg.enricher.EnrichFleetAppScripts(context.Background(), inferred)
 					}
-					currentSoftware.FleetMaintained = mergeFleetApps(currentTeam.Software.FleetMaintained, inferred)
+					enrichedSoftware.FleetMaintained = mergeFleetApps(currentTeam.Software.FleetMaintained, inferred)
 				}
 
-				result.Software = diffSoftware(currentSoftware, proposedTeam.Software)
+				result.Software = diffSoftware(enrichedSoftware, proposedTeam.Software)
 			}
 
 			if currentTeam.ProfilesUnavailable {
@@ -226,6 +229,30 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 			} else {
 				result.Scripts = diffScripts(currentTeam.Scripts, proposedTeam.Scripts)
 			}
+
+			// Subtract baseline: remove changes that already exist between the
+			// base branch and Fleet (merged but not yet deployed).
+			if cfg.baseline != nil {
+				if baseTeam, ok := findBaselineTeam(cfg.baseline, proposedTeam.Name); ok {
+					baseDiff := DiffResult{}
+					baseDiff.Policies = diffPolicies(currentTeam.Policies, baseTeam.Policies)
+					baseDiff.Queries = diffQueries(currentTeam.Queries, baseTeam.Queries)
+					if !currentTeam.SoftwareUnavailable {
+						baseDiff.Software = diffSoftware(enrichedSoftware, baseTeam.Software)
+					}
+					if !currentTeam.ProfilesUnavailable {
+						baseDiff.Profiles, _ = diffProfiles(currentTeam.Profiles, baseTeam.Profiles)
+					}
+					if !currentTeam.ScriptsUnavailable {
+						baseDiff.Scripts = diffScripts(currentTeam.Scripts, baseTeam.Scripts)
+					}
+					result.Policies = subtractResourceDiff(result.Policies, baseDiff.Policies)
+					result.Queries = subtractResourceDiff(result.Queries, baseDiff.Queries)
+					result.Software = subtractResourceDiff(result.Software, baseDiff.Software)
+					result.Profiles = subtractResourceDiff(result.Profiles, baseDiff.Profiles)
+					result.Scripts = subtractResourceDiff(result.Scripts, baseDiff.Scripts)
+				}
+			}
 		}
 
 		if len(changedFiles) > 0 {
@@ -235,30 +262,6 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 			result.Software = filterResourceDiff(result.Software, sourceNames, changedFiles)
 			result.Profiles = filterResourceDiff(result.Profiles, sourceNames, changedFiles)
 			result.Scripts = filterResourceDiff(result.Scripts, sourceNames, changedFiles)
-		}
-
-		// Subtract baseline: remove changes that already exist between the
-		// base branch and Fleet (merged but not yet deployed).
-		if cfg.baseline != nil && exists {
-			if baseTeam, ok := findBaselineTeam(cfg.baseline, proposedTeam.Name); ok {
-				baseDiff := DiffResult{}
-				baseDiff.Policies = diffPolicies(currentTeam.Policies, baseTeam.Policies)
-				baseDiff.Queries = diffQueries(currentTeam.Queries, baseTeam.Queries)
-				if !currentTeam.SoftwareUnavailable {
-					baseDiff.Software = diffSoftware(currentTeam.Software, baseTeam.Software)
-				}
-				if !currentTeam.ProfilesUnavailable {
-					baseDiff.Profiles, _ = diffProfiles(currentTeam.Profiles, baseTeam.Profiles)
-				}
-				if !currentTeam.ScriptsUnavailable {
-					baseDiff.Scripts = diffScripts(currentTeam.Scripts, baseTeam.Scripts)
-				}
-				result.Policies = subtractResourceDiff(result.Policies, baseDiff.Policies)
-				result.Queries = subtractResourceDiff(result.Queries, baseDiff.Queries)
-				result.Software = subtractResourceDiff(result.Software, baseDiff.Software)
-				result.Profiles = subtractResourceDiff(result.Profiles, baseDiff.Profiles)
-				result.Scripts = subtractResourceDiff(result.Scripts, baseDiff.Scripts)
-			}
 		}
 
 		result.Labels = validateLabels(proposedTeam, labelMap, changedNames(result.Policies))
