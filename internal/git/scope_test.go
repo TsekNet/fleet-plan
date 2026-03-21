@@ -68,11 +68,26 @@ func TestResolveScope(t *testing.T) {
 			wantTeamCount: 0,
 		},
 		{
+			name:          "labels/README.md does not set IncludeGlobal",
+			setup:         func(t *testing.T, root string) {},
+			changedFiles:  []string{"labels/README.md"},
+			wantGlobal:    false,
+			wantTeamCount: 0,
+		},
+		{
 			name:          "non-fleet file ignored",
 			setup:         func(t *testing.T, root string) {},
 			changedFiles:  []string{"README.md"},
 			wantGlobal:    false,
 			wantTeamCount: 0,
+		},
+		{
+			name:          "README under resource dir ignored",
+			setup:         func(t *testing.T, root string) {},
+			changedFiles:  []string{"policies/README.md", "scripts/README.md", "queries/README.md"},
+			wantGlobal:    false,
+			wantTeamCount: 0,
+			wantChanged:   nil,
 		},
 		{
 			name:          "path traversal skipped",
@@ -164,6 +179,11 @@ func TestIsFleetResource(t *testing.T) {
 		{"README.md", false},
 		{"base.yml", false},
 		{"labels/managed.yml", false},
+		{"policies/README.md", false},
+		{"scripts/README.md", false},
+		{"queries/README.md", false},
+		{"software/README.md", false},
+		{"profiles/README.md", false},
 	}
 
 	for _, tt := range tests {
