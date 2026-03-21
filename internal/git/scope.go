@@ -57,7 +57,7 @@ func ResolveScope(root string, changedFiles []string, envFile string) Scope {
 			}
 		}
 
-		if isFleetResourceOrTeam(f) {
+		if isFleetResourceOrTeam(f) || f == "base.yml" || f == "default.yml" {
 			scope.ChangedFiles = append(scope.ChangedFiles, f)
 		}
 	}

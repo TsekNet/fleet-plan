@@ -1710,6 +1710,178 @@ func TestDiffScriptChangedFileFilter(t *testing.T) {
 	}
 }
 
+// ---------- Baseline subtraction tests ----------
+
+func TestSubtractResourceDiff(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		total    ResourceDiff
+		baseline ResourceDiff
+		want     ResourceDiff
+	}{
+		{
+			name:     "empty baseline changes nothing",
+			total:    ResourceDiff{Added: []ResourceChange{{Name: "A"}}},
+			baseline: ResourceDiff{},
+			want:     ResourceDiff{Added: []ResourceChange{{Name: "A"}}},
+		},
+		{
+			name:     "subtract matching delete",
+			total:    ResourceDiff{Deleted: []ResourceChange{{Name: "old-policy"}, {Name: "mr-policy"}}},
+			baseline: ResourceDiff{Deleted: []ResourceChange{{Name: "old-policy"}}},
+			want:     ResourceDiff{Deleted: []ResourceChange{{Name: "mr-policy"}}},
+		},
+		{
+			name:     "subtract matching add",
+			total:    ResourceDiff{Added: []ResourceChange{{Name: "base-add"}, {Name: "mr-add"}}},
+			baseline: ResourceDiff{Added: []ResourceChange{{Name: "base-add"}}},
+			want:     ResourceDiff{Added: []ResourceChange{{Name: "mr-add"}}},
+		},
+		{
+			name: "subtract identical modify",
+			total: ResourceDiff{Modified: []ResourceChange{
+				{Name: "same-mod", Fields: map[string]FieldDiff{"query": {Old: "a", New: "b"}}},
+				{Name: "mr-mod", Fields: map[string]FieldDiff{"query": {Old: "x", New: "y"}}},
+			}},
+			baseline: ResourceDiff{Modified: []ResourceChange{
+				{Name: "same-mod", Fields: map[string]FieldDiff{"query": {Old: "a", New: "b"}}},
+			}},
+			want: ResourceDiff{Modified: []ResourceChange{
+				{Name: "mr-mod", Fields: map[string]FieldDiff{"query": {Old: "x", New: "y"}}},
+			}},
+		},
+		{
+			name: "keep modify with different fields",
+			total: ResourceDiff{Modified: []ResourceChange{
+				{Name: "evolved", Fields: map[string]FieldDiff{"query": {Old: "a", New: "c"}}},
+			}},
+			baseline: ResourceDiff{Modified: []ResourceChange{
+				{Name: "evolved", Fields: map[string]FieldDiff{"query": {Old: "a", New: "b"}}},
+			}},
+			want: ResourceDiff{Modified: []ResourceChange{
+				{Name: "evolved", Fields: map[string]FieldDiff{"query": {Old: "a", New: "c"}}},
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := subtractResourceDiff(tt.total, tt.baseline)
+			assertResourceDiffEqual(t, tt.want, got)
+		})
+	}
+}
+
+func TestDiffWithBaselineSubtraction(t *testing.T) {
+	t.Parallel()
+
+	// Simulate: base branch already removed "old-policy" and modified "shared-query".
+	// MR adds "new-query" and removes "mr-removed-policy".
+	// Only the MR's changes should appear.
+
+	current := &api.FleetState{
+		Teams: []api.Team{
+			{
+				ID:   1,
+				Name: "TestTeam",
+				Policies: []api.Policy{
+					{Name: "old-policy", Query: "SELECT 1;", Platform: "linux"},
+					{Name: "mr-removed-policy", Query: "SELECT 2;", Platform: "windows"},
+				},
+				Queries: []api.Query{
+					{Name: "shared-query", Query: "SELECT old;", Interval: 3600},
+					{Name: "existing-query", Query: "SELECT x;", Interval: 300},
+				},
+			},
+		},
+	}
+
+	// MR branch: old-policy gone (already removed in base), mr-removed-policy gone (MR removes it),
+	// shared-query modified to "SELECT new;" (already modified in base to same value),
+	// new-query added (MR adds it).
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{
+			{
+				Name:       "TestTeam",
+				SourceFile: "teams/test.yml",
+				Queries: []parser.ParsedQuery{
+					{Name: "shared-query", Query: "SELECT new;", Interval: 3600},
+					{Name: "existing-query", Query: "SELECT x;", Interval: 300},
+					{Name: "new-query", Query: "SELECT fresh;", Interval: 600, SourceFile: "queries/new.yml"},
+				},
+			},
+		},
+	}
+
+	// Base branch: old-policy already removed, shared-query already modified,
+	// but mr-removed-policy still present.
+	baseline := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{
+			{
+				Name:       "TestTeam",
+				SourceFile: "teams/test.yml",
+				Policies: []parser.ParsedPolicy{
+					{Name: "mr-removed-policy", Query: "SELECT 2;", Platform: "windows"},
+				},
+				Queries: []parser.ParsedQuery{
+					{Name: "shared-query", Query: "SELECT new;", Interval: 3600},
+					{Name: "existing-query", Query: "SELECT x;", Interval: 300},
+				},
+			},
+		},
+	}
+
+	results := Diff(current, proposed, nil, nil, WithBaseline(baseline))
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+
+	// old-policy deletion should be subtracted (already in base).
+	if len(r.Policies.Deleted) != 1 {
+		t.Fatalf("expected 1 deleted policy (mr-removed-policy), got %d: %+v", len(r.Policies.Deleted), r.Policies.Deleted)
+	}
+	if r.Policies.Deleted[0].Name != "mr-removed-policy" {
+		t.Errorf("deleted policy name: got %q, want mr-removed-policy", r.Policies.Deleted[0].Name)
+	}
+
+	// shared-query modification should be subtracted (same diff in base).
+	if len(r.Queries.Modified) != 0 {
+		t.Errorf("expected 0 modified queries (subtracted), got %d: %+v", len(r.Queries.Modified), r.Queries.Modified)
+	}
+
+	// new-query addition should remain (not in base).
+	if len(r.Queries.Added) != 1 {
+		t.Fatalf("expected 1 added query (new-query), got %d", len(r.Queries.Added))
+	}
+	if r.Queries.Added[0].Name != "new-query" {
+		t.Errorf("added query name: got %q, want new-query", r.Queries.Added[0].Name)
+	}
+}
+
+func assertResourceDiffEqual(t *testing.T, want, got ResourceDiff) {
+	t.Helper()
+	assertChangesEqual(t, "Added", want.Added, got.Added)
+	assertChangesEqual(t, "Modified", want.Modified, got.Modified)
+	assertChangesEqual(t, "Deleted", want.Deleted, got.Deleted)
+}
+
+func assertChangesEqual(t *testing.T, label string, want, got []ResourceChange) {
+	t.Helper()
+	if len(want) != len(got) {
+		t.Errorf("%s: want %d changes, got %d", label, len(want), len(got))
+		return
+	}
+	for i := range want {
+		if want[i].Name != got[i].Name {
+			t.Errorf("%s[%d].Name: want %q, got %q", label, i, want[i].Name, got[i].Name)
+		}
+	}
+}
+
 // findTeam locates a DiffResult by team name, failing the test if not found.
 func findTeam(t *testing.T, results []DiffResult, name string) *DiffResult {
 	t.Helper()

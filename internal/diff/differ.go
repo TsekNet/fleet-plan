@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -99,12 +100,64 @@ type ScriptEnricher interface {
 type DiffOption func(*diffOptions)
 
 type diffOptions struct {
-	enricher ScriptEnricher
+	enricher     ScriptEnricher
+	baseline     *parser.ParsedRepo
+	verbose      bool
+	includeGlobal bool
 }
 
 // WithScriptEnricher enables script-level diffing for fleet-maintained apps.
 func WithScriptEnricher(e ScriptEnricher) DiffOption {
 	return func(o *diffOptions) { o.enricher = e }
+}
+
+// WithVerbose enables detailed stderr logging of baseline subtraction.
+func WithVerbose(v bool) DiffOption {
+	return func(o *diffOptions) { o.verbose = v }
+}
+
+// WithIncludeGlobal forces global config diffing even when team filters are
+// set. Used in --git mode when both global and team files changed.
+func WithIncludeGlobal(v bool) DiffOption {
+	return func(o *diffOptions) { o.includeGlobal = v }
+}
+
+// WithBaseline provides a parsed base-branch repo. When set, Diff subtracts
+// changes that already exist between the base branch and Fleet (i.e. changes
+// merged to main but not yet deployed) so that only the incremental changes
+// introduced by the current MR are reported.
+func WithBaseline(b *parser.ParsedRepo) DiffOption {
+	return func(o *diffOptions) { o.baseline = b }
+}
+
+// vlog writes to stderr when verbose mode is enabled.
+func vlog(verbose bool, format string, args ...any) {
+	if verbose {
+		fmt.Fprintf(os.Stderr, "[verbose] "+format+"\n", args...)
+	}
+}
+
+// rdSummary returns a one-line summary of a ResourceDiff.
+func rdSummary(rd ResourceDiff) string {
+	return fmt.Sprintf("+%d ~%d -%d", len(rd.Added), len(rd.Modified), len(rd.Deleted))
+}
+
+// rdNames returns names of changes for debugging.
+func rdNames(rd ResourceDiff) string {
+	var names []string
+	for _, c := range rd.Added {
+		names = append(names, "+"+c.Name)
+	}
+	for _, c := range rd.Modified {
+		names = append(names, "~"+c.Name)
+	}
+	for _, c := range rd.Deleted {
+		names = append(names, "-"+c.Name)
+	}
+	if len(names) == 0 {
+		return "(none)"
+	}
+	return strings.Join(names, ", ")
 }
 
 // Diff computes the diff between current Fleet state and proposed YAML for all
@@ -125,8 +178,13 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 		labelMap[l.Name] = l
 	}
 
+	vlog(cfg.verbose, "baseline=%v, baseline.Global=%v, teamFilters=%v, changedFiles=%v",
+		cfg.baseline != nil, cfg.baseline != nil && cfg.baseline.Global != nil, teamFilters, changedFiles)
+
 	// --- Global config diff (default.yml) ---
-	if proposed.Global != nil && len(teamFilters) == 0 {
+	if proposed.Global != nil && (len(teamFilters) == 0 || cfg.includeGlobal) {
+		vlog(cfg.verbose, "(global) proposed: %d policies, %d queries", len(proposed.Global.Policies), len(proposed.Global.Queries))
+		vlog(cfg.verbose, "(global) fleet: %d policies, %d queries", len(current.GlobalPolicies), len(current.GlobalQueries))
 		globalResult := DiffResult{Team: "(global)"}
 
 		if current.Config != nil {
@@ -138,6 +196,31 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 
 		// Diff global queries
 		globalResult.Queries = diffQueries(current.GlobalQueries, proposed.Global.Queries)
+
+		vlog(cfg.verbose, "(global) MR diff: policies=%s queries=%s config=%d",
+			rdSummary(globalResult.Policies), rdSummary(globalResult.Queries), len(globalResult.Config))
+
+		// Subtract baseline for global scope
+		if cfg.baseline != nil && cfg.baseline.Global != nil {
+			vlog(cfg.verbose, "(global) baseline: %d policies, %d queries",
+				len(cfg.baseline.Global.Policies), len(cfg.baseline.Global.Queries))
+			var baseConfig []ConfigChange
+			if current.Config != nil {
+				baseConfig, _ = diffConfig(current.Config, cfg.baseline.Global)
+			}
+			basePolicies := diffPolicies(current.GlobalPolicies, cfg.baseline.Global.Policies)
+			baseQueries := diffQueries(current.GlobalQueries, cfg.baseline.Global.Queries)
+
+			vlog(cfg.verbose, "(global) baseline diff: policies=%s queries=%s config=%d",
+				rdSummary(basePolicies), rdSummary(baseQueries), len(baseConfig))
+
+			globalResult.Config = subtractConfigChanges(globalResult.Config, baseConfig)
+			globalResult.Policies = subtractResourceDiff(globalResult.Policies, basePolicies)
+			globalResult.Queries = subtractResourceDiff(globalResult.Queries, baseQueries)
+
+			vlog(cfg.verbose, "(global) after subtraction: policies=%s queries=%s config=%d",
+				rdSummary(globalResult.Policies), rdSummary(globalResult.Queries), len(globalResult.Config))
+		}
 
 		results = append(results, globalResult)
 	}
@@ -181,14 +264,22 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 				result.Errors = append(result.Errors, fmt.Sprintf("info: team %q does not exist in Fleet yet (will be created)", proposedTeam.Name))
 			}
 		} else {
+			vlog(cfg.verbose, "[%s] proposed: %d policies, %d queries", proposedTeam.Name,
+				len(proposedTeam.Policies), len(proposedTeam.Queries))
+			vlog(cfg.verbose, "[%s] fleet: %d policies, %d queries", proposedTeam.Name,
+				len(currentTeam.Policies), len(currentTeam.Queries))
+
 			result.Policies = diffPolicies(currentTeam.Policies, proposedTeam.Policies)
 			result.Queries = diffQueries(currentTeam.Queries, proposedTeam.Queries)
+
+			// enrichedSoftware holds the API software state with fleet-maintained
+			// app scripts populated. Hoisted here so the baseline subtraction
+			// can reuse the same enriched state.
+			enrichedSoftware := currentTeam.Software
 
 			if currentTeam.SoftwareUnavailable {
 				result.Errors = append(result.Errors, "software diff skipped: API token lacks permission to read software titles")
 			} else {
-				currentSoftware := currentTeam.Software
-
 				// Fleet's /teams API may return fleet_maintained_apps: null, or
 				// return a partial list (e.g., only macOS FMAs while Windows FMAs
 				// are merged into packages). Infer from software titles + catalog
@@ -198,10 +289,10 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 					if cfg.enricher != nil && len(inferred) > 0 {
 						cfg.enricher.EnrichFleetAppScripts(context.Background(), inferred)
 					}
-					currentSoftware.FleetMaintained = mergeFleetApps(currentTeam.Software.FleetMaintained, inferred)
+					enrichedSoftware.FleetMaintained = mergeFleetApps(currentTeam.Software.FleetMaintained, inferred)
 				}
 
-				result.Software = diffSoftware(currentSoftware, proposedTeam.Software)
+				result.Software = diffSoftware(enrichedSoftware, proposedTeam.Software)
 			}
 
 			if currentTeam.ProfilesUnavailable {
@@ -217,15 +308,65 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 			} else {
 				result.Scripts = diffScripts(currentTeam.Scripts, proposedTeam.Scripts)
 			}
+
+			vlog(cfg.verbose, "[%s] MR diff: policies=%s queries=%s software=%s scripts=%s",
+				proposedTeam.Name, rdSummary(result.Policies), rdSummary(result.Queries),
+				rdSummary(result.Software), rdSummary(result.Scripts))
+			if cfg.verbose {
+				vlog(true, "[%s] MR queries: %s", proposedTeam.Name, rdNames(result.Queries))
+			}
+
+			// Subtract baseline: remove changes that already exist between the
+			// base branch and Fleet (merged but not yet deployed).
+			if cfg.baseline != nil {
+				if baseTeam, ok := findBaselineTeam(cfg.baseline, proposedTeam.Name); ok {
+					vlog(cfg.verbose, "[%s] baseline team found: %d policies, %d queries",
+						proposedTeam.Name, len(baseTeam.Policies), len(baseTeam.Queries))
+					baseDiff := DiffResult{}
+					baseDiff.Policies = diffPolicies(currentTeam.Policies, baseTeam.Policies)
+					baseDiff.Queries = diffQueries(currentTeam.Queries, baseTeam.Queries)
+					if !currentTeam.SoftwareUnavailable {
+						baseDiff.Software = diffSoftware(enrichedSoftware, baseTeam.Software)
+					}
+					if !currentTeam.ProfilesUnavailable {
+						baseDiff.Profiles, _ = diffProfiles(currentTeam.Profiles, baseTeam.Profiles)
+					}
+					if !currentTeam.ScriptsUnavailable {
+						baseDiff.Scripts = diffScripts(currentTeam.Scripts, baseTeam.Scripts)
+					}
+					vlog(cfg.verbose, "[%s] baseline diff: policies=%s queries=%s software=%s",
+						proposedTeam.Name, rdSummary(baseDiff.Policies),
+						rdSummary(baseDiff.Queries), rdSummary(baseDiff.Software))
+					if cfg.verbose {
+						vlog(true, "[%s] baseline queries: %s", proposedTeam.Name, rdNames(baseDiff.Queries))
+					}
+					result.Policies = subtractResourceDiff(result.Policies, baseDiff.Policies)
+					result.Queries = subtractResourceDiff(result.Queries, baseDiff.Queries)
+					result.Software = subtractResourceDiff(result.Software, baseDiff.Software)
+					result.Profiles = subtractResourceDiff(result.Profiles, baseDiff.Profiles)
+					result.Scripts = subtractResourceDiff(result.Scripts, baseDiff.Scripts)
+					vlog(cfg.verbose, "[%s] after subtraction: policies=%s queries=%s software=%s",
+						proposedTeam.Name, rdSummary(result.Policies),
+						rdSummary(result.Queries), rdSummary(result.Software))
+				} else {
+					vlog(cfg.verbose, "[%s] no baseline team found", proposedTeam.Name)
+				}
+			}
 		}
 
 		if len(changedFiles) > 0 {
+			vlog(cfg.verbose, "[%s] before changedFiles filter: policies=%s queries=%s software=%s",
+				proposedTeam.Name, rdSummary(result.Policies), rdSummary(result.Queries),
+				rdSummary(result.Software))
 			sourceNames := buildSourceMap(proposedTeam)
 			result.Policies = filterResourceDiff(result.Policies, sourceNames, changedFiles)
 			result.Queries = filterResourceDiff(result.Queries, sourceNames, changedFiles)
 			result.Software = filterResourceDiff(result.Software, sourceNames, changedFiles)
 			result.Profiles = filterResourceDiff(result.Profiles, sourceNames, changedFiles)
 			result.Scripts = filterResourceDiff(result.Scripts, sourceNames, changedFiles)
+			vlog(cfg.verbose, "[%s] after changedFiles filter: policies=%s queries=%s software=%s",
+				proposedTeam.Name, rdSummary(result.Policies), rdSummary(result.Queries),
+				rdSummary(result.Software))
 		}
 
 		result.Labels = validateLabels(proposedTeam, labelMap, changedNames(result.Policies))
@@ -244,9 +385,11 @@ func buildSourceMap(team parser.ParsedTeam) map[string][]string {
 	}
 	for _, p := range team.Policies {
 		add(p.Name, p.SourceFile)
+		add(p.Name, team.SourceFile)
 	}
 	for _, q := range team.Queries {
 		add(q.Name, q.SourceFile)
+		add(q.Name, team.SourceFile)
 	}
 	for _, p := range team.Software.Packages {
 		key := parser.NormalizeSoftwarePath(p.RefPath)
@@ -258,6 +401,7 @@ func buildSourceMap(team parser.ParsedTeam) map[string][]string {
 		}
 		if key != "" {
 			add(parser.NormalizeSoftwarePath(key), p.SourceFile)
+			add(parser.NormalizeSoftwarePath(key), team.SourceFile)
 			for _, sf := range p.SourceFiles {
 				add(parser.NormalizeSoftwarePath(key), sf)
 			}
@@ -276,9 +420,11 @@ func buildSourceMap(team parser.ParsedTeam) map[string][]string {
 	}
 	for _, p := range team.Profiles {
 		add(p.Name, p.SourceFile)
+		add(p.Name, team.SourceFile)
 	}
 	for _, s := range team.Scripts {
 		add(s.Name, s.SourceFile)
+		add(s.Name, team.SourceFile)
 	}
 	return m
 }
@@ -309,6 +455,107 @@ func filterChanges(changes []ResourceChange, keep func(string) bool) []ResourceC
 	var out []ResourceChange
 	for _, c := range changes {
 		if keep(c.Name) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// ---------- Baseline subtraction ----------
+
+// findBaselineTeam looks up a team by name in the baseline parsed repo.
+func findBaselineTeam(baseline *parser.ParsedRepo, name string) (parser.ParsedTeam, bool) {
+	for _, t := range baseline.Teams {
+		if strings.EqualFold(t.Name, name) {
+			return t, true
+		}
+	}
+	return parser.ParsedTeam{}, false
+}
+
+// subtractResourceDiff removes changes from "total" that also appear in
+// "baseline". A change is considered the same if it has the same Name and
+// change type (added/modified/deleted).
+//
+// For modified resources, if the resource appears in both diffs but with
+// different field changes, it is kept (the MR introduced additional changes
+// beyond what the baseline already had).
+func subtractResourceDiff(total, baseline ResourceDiff) ResourceDiff {
+	return ResourceDiff{
+		Added:    subtractChanges(total.Added, baseline.Added),
+		Modified: subtractModified(total.Modified, baseline.Modified),
+		Deleted:  subtractChanges(total.Deleted, baseline.Deleted),
+	}
+}
+
+// subtractChanges removes entries from "total" whose Name matches an entry in
+// "baseline". Used for Added and Deleted lists where name-match is sufficient.
+func subtractChanges(total, baseline []ResourceChange) []ResourceChange {
+	if len(baseline) == 0 {
+		return total
+	}
+	baseNames := make(map[string]bool, len(baseline))
+	for _, b := range baseline {
+		baseNames[b.Name] = true
+	}
+	var out []ResourceChange
+	for _, c := range total {
+		if !baseNames[c.Name] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// subtractModified removes entries from "total" that have the exact same field
+// diffs in "baseline". If a resource is modified in both but with different
+// fields or values, it is kept (the MR changed it further).
+func subtractModified(total, baseline []ResourceChange) []ResourceChange {
+	if len(baseline) == 0 {
+		return total
+	}
+	baseFields := make(map[string]map[string]FieldDiff, len(baseline))
+	for _, b := range baseline {
+		baseFields[b.Name] = b.Fields
+	}
+	var out []ResourceChange
+	for _, c := range total {
+		bf, exists := baseFields[c.Name]
+		if !exists || !sameFieldDiffs(c.Fields, bf) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// sameFieldDiffs returns true if two field diff maps are identical.
+func sameFieldDiffs(a, b map[string]FieldDiff) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		bv, ok := b[k]
+		if !ok || av.Old != bv.Old || av.New != bv.New {
+			return false
+		}
+	}
+	return true
+}
+
+// subtractConfigChanges removes ConfigChange entries from "total" that also
+// appear in "baseline" with the same Section, Key, Old, and New values.
+func subtractConfigChanges(total, baseline []ConfigChange) []ConfigChange {
+	if len(baseline) == 0 {
+		return total
+	}
+	type configKey struct{ Section, Key, Old, New string }
+	baseSet := make(map[configKey]bool, len(baseline))
+	for _, b := range baseline {
+		baseSet[configKey{b.Section, b.Key, b.Old, b.New}] = true
+	}
+	var out []ConfigChange
+	for _, c := range total {
+		if !baseSet[configKey{c.Section, c.Key, c.Old, c.New}] {
 			out = append(out, c)
 		}
 	}

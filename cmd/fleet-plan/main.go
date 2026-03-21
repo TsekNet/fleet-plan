@@ -110,6 +110,7 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 	// --git: detect CI context, resolve changed files + affected teams.
 	var changedFiles []string
 	var ci git.Env
+	var includeGlobal bool
 	teams := flagTeams
 
 	if flagGit {
@@ -119,6 +120,7 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 			return nil
 		}
 		changedFiles = resolved.ChangedFiles
+		includeGlobal = resolved.IncludeGlobal
 		if len(resolved.Teams) > 0 && len(teams) == 0 {
 			teams = resolved.Teams
 		}
@@ -136,6 +138,24 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("no teams found in %s/teams/\nAre you in a fleet-gitops repo? Try --repo /path/to/repo", flagRepo)
 	}
 
+	// Parse baseline (base branch) for subtraction when in --git mode.
+	var baseline *parser.ParsedRepo
+	if flagGit && len(changedFiles) > 0 && ci.DiffBaseSHA != "" {
+		baseRoot, baseCleanup, err := git.CheckoutBaseline(flagRepo, ci.DiffBaseSHA, changedFiles)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not extract baseline (%v), skipping baseline subtraction\n", err)
+		} else {
+			defer baseCleanup()
+			baseDefaultFile := resolveBaselineDefault(baseRoot, flagRepo, flagBase, flagEnv)
+			baseParsed, err := parser.ParseRepo(baseRoot, teams, baseDefaultFile)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not parse baseline (%v), skipping baseline subtraction\n", err)
+			} else {
+				baseline = baseParsed
+			}
+		}
+	}
+
 	client, err := api.NewClient(auth.URL, auth.Token)
 	if err != nil {
 		return err
@@ -149,8 +169,11 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	results := diff.Diff(state, repo, teams, changedFiles,
-		diff.WithScriptEnricher(client))
+	diffOpts := []diff.DiffOption{diff.WithScriptEnricher(client), diff.WithVerbose(flagVerbose), diff.WithIncludeGlobal(includeGlobal)}
+	if baseline != nil {
+		diffOpts = append(diffOpts, diff.WithBaseline(baseline))
+	}
+	results := diff.Diff(state, repo, teams, changedFiles, diffOpts...)
 	elapsed := time.Since(start)
 
 	hasChanges := output.HasChanges(results)
@@ -219,7 +242,9 @@ func resolveDefaultFile(repo, base, env string) (path string, cleanup func(), er
 		env = filepath.Join(repo, env)
 	}
 
-	tmp, err := os.CreateTemp("", "fleet-plan-default-*.yml")
+	// Place the merged file inside the repo so the parser resolves path:
+	// references (./queries/...) relative to the repo root, not /tmp.
+	tmp, err := os.CreateTemp(repo, ".fleet-plan-default-*.yml")
 	if err != nil {
 		return "", nil, fmt.Errorf("creating temp file for merged config: %w", err)
 	}
@@ -232,6 +257,41 @@ func resolveDefaultFile(repo, base, env string) (path string, cleanup func(), er
 	}
 
 	return tmpPath, func() { os.Remove(tmpPath) }, nil
+}
+
+// resolveBaselineDefault returns the path to default.yml for baseline parsing.
+// When --base and --env are used, it merges the base branch's base.yml with
+// the env overlay (from the MR branch, since env overlays rarely change).
+// Falls back to the baseline's default.yml if present.
+func resolveBaselineDefault(baseRoot, repoRoot, base, env string) string {
+	if base != "" && env != "" {
+		baseFile := filepath.Join(baseRoot, base)
+		if _, err := os.Stat(baseFile); err != nil {
+			// base.yml doesn't exist at base ref, skip
+			return ""
+		}
+		// Use the env overlay from the MR branch (repoRoot), not the baseline.
+		envFile := env
+		if !filepath.IsAbs(envFile) {
+			envFile = filepath.Join(repoRoot, envFile)
+		}
+		if _, err := os.Stat(envFile); err != nil {
+			return ""
+		}
+		// Place the merged file inside the baseline temp dir so the parser
+		// resolves path: refs (./queries/...) relative to the baseline root.
+		tmpPath := filepath.Join(baseRoot, "default.yml")
+		if err := merge.MergeFiles(baseFile, envFile, tmpPath); err != nil {
+			return ""
+		}
+		return tmpPath
+	}
+	// No base+env: check for plain default.yml in the baseline.
+	candidate := filepath.Join(baseRoot, "default.yml")
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate
+	}
+	return ""
 }
 
 // buildHeading returns the default CI heading using the Fleet server URL.
