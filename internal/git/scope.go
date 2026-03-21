@@ -37,7 +37,7 @@ func ResolveScope(root string, changedFiles []string, envFile string) Scope {
 			continue
 		}
 		switch {
-		case f == "base.yml", f == envFile, strings.HasPrefix(f, "labels/"):
+		case f == "base.yml", f == envFile, strings.HasPrefix(f, "labels/") && !strings.HasSuffix(f, ".md"):
 			scope.IncludeGlobal = true
 
 		case strings.HasPrefix(f, "teams/") && (strings.HasSuffix(f, ".yml") || strings.HasSuffix(f, ".yaml")):
@@ -65,8 +65,12 @@ func ResolveScope(root string, changedFiles []string, envFile string) Scope {
 	return scope
 }
 
-// isFleetResource returns true for files under the fleet-managed resource dirs.
+// isFleetResource returns true for files under the fleet-managed resource dirs,
+// excluding markdown files which are documentation, not fleet config.
 func isFleetResource(f string) bool {
+	if strings.HasSuffix(f, ".md") {
+		return false
+	}
 	for _, prefix := range fleetResourcePrefixes {
 		if strings.HasPrefix(f, prefix) {
 			return true
