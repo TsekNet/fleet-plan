@@ -23,15 +23,15 @@ var wsRE = regexp.MustCompile(`\s+`)
 
 // DiffResult holds the diff for a single team (or global scope).
 type DiffResult struct {
-	Team                 string // "(global)" for default.yml scope
-	Policies             ResourceDiff
-	Queries              ResourceDiff
-	Software             ResourceDiff
-	Profiles             ResourceDiff
-	Scripts              ResourceDiff
-	Labels               LabelValidation
-	Config               []ConfigChange // org_settings, agent_options, controls diffs
-	Errors               []string
+	Team                  string // "(global)" for default.yml scope
+	Policies              ResourceDiff
+	Queries               ResourceDiff
+	Software              ResourceDiff
+	Profiles              ResourceDiff
+	Scripts               ResourceDiff
+	Labels                LabelValidation
+	Config                []ConfigChange // org_settings, agent_options, controls diffs
+	Errors                []string
 	SkippedConfigSections []string // config sections absent from API (e.g. "agent_options")
 }
 
@@ -100,9 +100,9 @@ type ScriptEnricher interface {
 type DiffOption func(*diffOptions)
 
 type diffOptions struct {
-	enricher     ScriptEnricher
-	baseline     *parser.ParsedRepo
-	verbose      bool
+	enricher      ScriptEnricher
+	baseline      *parser.ParsedRepo
+	verbose       bool
 	includeGlobal bool
 }
 
@@ -299,7 +299,7 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 				result.Errors = append(result.Errors, "profiles diff skipped: API token lacks permission to read profiles")
 			} else {
 				var profileWarnings []string
-				result.Profiles, profileWarnings = diffProfiles(currentTeam.Profiles, proposedTeam.Profiles)
+				result.Profiles, profileWarnings = diffProfiles(currentTeam.Profiles, proposedTeam.Profiles, changedFiles)
 				result.Errors = append(result.Errors, profileWarnings...)
 			}
 
@@ -329,7 +329,7 @@ func Diff(current *api.FleetState, proposed *parser.ParsedRepo, teamFilters []st
 						baseDiff.Software = diffSoftware(enrichedSoftware, baseTeam.Software)
 					}
 					if !currentTeam.ProfilesUnavailable {
-						baseDiff.Profiles, _ = diffProfiles(currentTeam.Profiles, baseTeam.Profiles)
+						baseDiff.Profiles, _ = diffProfiles(currentTeam.Profiles, baseTeam.Profiles, nil)
 					}
 					if !currentTeam.ScriptsUnavailable {
 						baseDiff.Scripts = diffScripts(currentTeam.Scripts, baseTeam.Scripts)
@@ -421,6 +421,7 @@ func buildSourceMap(team parser.ParsedTeam) map[string][]string {
 	for _, p := range team.Profiles {
 		add(p.Name, p.SourceFile)
 		add(p.Name, team.SourceFile)
+		add(p.Name, p.Path)
 	}
 	for _, s := range team.Scripts {
 		add(s.Name, s.SourceFile)
@@ -797,9 +798,9 @@ func diffSoftware(current api.TeamSoftware, proposed parser.ParsedSoftware) Reso
 			}
 		}
 		for _, sc := range []struct {
-			name     string
-			curVal   string
-			newVal   string
+			name   string
+			curVal string
+			newVal string
 		}{
 			{"install_script", cur.InstallScript, a.InstallScript},
 			{"uninstall_script", cur.UninstallScript, a.UninstallScript},
@@ -1080,13 +1081,19 @@ func normalizeFleetPlatform(platform string) string {
 	}
 }
 
-func diffProfiles(current []api.Profile, proposed []parser.ParsedProfile) (ResourceDiff, []string) {
+func diffProfiles(current []api.Profile, proposed []parser.ParsedProfile, changedFiles []string) (ResourceDiff, []string) {
 	var diff ResourceDiff
 	var warnings []string
 
 	currentMap := make(map[string]api.Profile)
 	for _, p := range current {
 		currentMap[p.Name] = p
+	}
+
+	// Build a set of changed file paths for fast lookup.
+	changedSet := make(map[string]bool, len(changedFiles))
+	for _, cf := range changedFiles {
+		changedSet[cf] = true
 	}
 
 	// Profile identity is determined by the name embedded in the file content
@@ -1109,6 +1116,16 @@ func diffProfiles(current []api.Profile, proposed []parser.ParsedProfile) (Resou
 			diff.Added = append(diff.Added, ResourceChange{
 				Name:   name,
 				Fields: fields,
+			})
+		} else if changedSet[p.Path] {
+			// The Fleet API does not return profile content, so we cannot
+			// compare payloads. When the profile XML file appears in the
+			// git changed-files list, treat it as modified.
+			diff.Modified = append(diff.Modified, ResourceChange{
+				Name: name,
+				Fields: map[string]FieldDiff{
+					"path": {New: p.Path},
+				},
 			})
 		}
 	}
@@ -1508,4 +1525,3 @@ func normalizeScript(s string) string {
 func normalizeWS(s string) string {
 	return strings.TrimSpace(wsRE.ReplaceAllString(s, " "))
 }
-
