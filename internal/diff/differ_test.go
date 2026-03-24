@@ -266,10 +266,10 @@ func TestDiffPolicyScenarios(t *testing.T) {
 			wantModified: 1, checkName: "Disk Encryption", checkFields: []string{"query", "critical"},
 		},
 		{
-			name:         "policy deleted with hosts",
-			current:      []api.Policy{{Name: "Keep", Platform: "darwin"}, {Name: "Delete This", Platform: "darwin", PassingHostCount: 50}},
-			proposed:     []parser.ParsedPolicy{{Name: "Keep", Platform: "darwin"}},
-			wantDeleted:  1, checkName: "Delete This", checkWarning: true,
+			name:        "policy deleted with hosts",
+			current:     []api.Policy{{Name: "Keep", Platform: "darwin"}, {Name: "Delete This", Platform: "darwin", PassingHostCount: 50}},
+			proposed:    []parser.ParsedPolicy{{Name: "Keep", Platform: "darwin"}},
+			wantDeleted: 1, checkName: "Delete This", checkWarning: true,
 		},
 		{
 			name:     "no changes",
@@ -1213,7 +1213,7 @@ func TestDiffProfilesMatchByContentName(t *testing.T) {
 		{Path: "/repo/profiles/mac/wifi-corporate.mobileconfig", Name: "wifi-corporate", Platform: "darwin"},
 	}
 
-	diff, warnings := diffProfiles(current, proposed)
+	diff, warnings := diffProfiles(current, proposed, nil)
 	if len(warnings) > 0 {
 		t.Errorf("unexpected warnings: %v", warnings)
 	}
@@ -1236,7 +1236,7 @@ func TestDiffProfilesDetectsRealChanges(t *testing.T) {
 		{Path: "/repo/profiles/mac/new-profile.mobileconfig", Name: "new-profile", Platform: "darwin"},
 	}
 
-	diff, _ := diffProfiles(current, proposed)
+	diff, _ := diffProfiles(current, proposed, nil)
 	if len(diff.Added) != 1 || diff.Added[0].Name != "new-profile" {
 		t.Errorf("expected 1 added profile 'new-profile', got %v", diff.Added)
 	}
@@ -1249,12 +1249,12 @@ func TestDiffProfilesDetectsRealChanges(t *testing.T) {
 
 func TestDiffGlobalConfig(t *testing.T) {
 	tests := []struct {
-		name            string
-		apiConfig       map[string]any
-		proposedOrg     map[string]any
-		wantChanges     int
-		wantKey         string // key to find in changes (empty = skip check)
-		wantKeyAbsent   string // key that must NOT appear in changes
+		name             string
+		apiConfig        map[string]any
+		proposedOrg      map[string]any
+		wantChanges      int
+		wantKey          string // key to find in changes (empty = skip check)
+		wantKeyAbsent    string // key that must NOT appear in changes
 		wantOld, wantNew string
 	}{
 		{
@@ -1878,6 +1878,70 @@ func assertChangesEqual(t *testing.T, label string, want, got []ResourceChange) 
 	for i := range want {
 		if want[i].Name != got[i].Name {
 			t.Errorf("%s[%d].Name: want %q, got %q", label, i, want[i].Name, got[i].Name)
+		}
+	}
+}
+
+// TestDiffChangedFileFilterIncludesProfilePath verifies that modifying a profile
+// XML file (not the team YAML) is detected by the changed-file filter.
+func TestDiffChangedFileFilterIncludesProfilePath(t *testing.T) {
+	t.Parallel()
+
+	current := &api.FleetState{
+		Teams: []api.Team{{
+			ID:   1,
+			Name: "T",
+			Profiles: []api.Profile{
+				{ProfileUUID: "uuid-1", Name: "experience_windows", Platform: "windows"},
+				{ProfileUUID: "uuid-2", Name: "newsandinterests_windows", Platform: "windows"},
+			},
+		}},
+	}
+
+	proposed := &parser.ParsedRepo{
+		Teams: []parser.ParsedTeam{{
+			Name: "T",
+			Profiles: []parser.ParsedProfile{
+				{
+					Name:       "experience_windows",
+					Path:       "profiles/windows/experience_windows.xml",
+					Platform:   "windows",
+					SourceFile: "/repo/teams/t.yml",
+				},
+				{
+					Name:       "newsandinterests_windows",
+					Path:       "profiles/windows/newsandinterests_windows.xml",
+					Platform:   "windows",
+					SourceFile: "/repo/teams/t.yml",
+				},
+			},
+		}},
+	}
+
+	// Only the profile XML changed, not the team YAML.
+	changedFiles := []string{
+		"profiles/windows/experience_windows.xml",
+	}
+
+	results := Diff(current, proposed, nil, changedFiles)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+
+	// experience_windows should appear (its XML path is in changedFiles).
+	if len(r.Profiles.Modified) != 1 {
+		t.Fatalf("expected 1 modified profile (XML path match), got %d modified, %d added, %d deleted",
+			len(r.Profiles.Modified), len(r.Profiles.Added), len(r.Profiles.Deleted))
+	}
+	if r.Profiles.Modified[0].Name != "experience_windows" {
+		t.Errorf("expected experience_windows in modified, got %q", r.Profiles.Modified[0].Name)
+	}
+
+	// newsandinterests_windows should be filtered out (its XML is not in changedFiles).
+	for _, m := range r.Profiles.Modified {
+		if m.Name == "newsandinterests_windows" {
+			t.Errorf("newsandinterests_windows should be filtered out, but found in modified")
 		}
 	}
 }
